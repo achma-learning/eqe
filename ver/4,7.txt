@@ -1,0 +1,925 @@
+// ==UserScript==
+// @name         eqe fmpm - e-qe.online Auto-Advance + Extra Shortcuts
+// @namespace    https://e-qe.online/
+// @version      4.7
+// @description  ←→↑↓ → navigation • Space/Enter → check/submit • C → Official/Community • A → Explain • Shift+A → Pause/Resume • Dynamic Island Timer
+// @match        https://e-qe.online/*
+// @match        https://www.e-qe.online/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @license      MIT
+// @run-at       document-idle
+// @downloadURL none
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    // ============================================================================
+    // CONFIGURATION & STATE
+    // ============================================================================
+    
+    let config = {
+        questionTimer: GM_getValue('questionTimer', 10),
+        answerTimer: GM_getValue('answerTimer', 5),
+        autoAdvanceEnabled: GM_getValue('autoAdvanceEnabled', false)
+    };
+
+    let state = {
+        currentPhase: null,
+        timerHandle: null,
+        countdownInterval: null,
+        isAnswerSelected: false,
+        lastQuestionText: null,
+        timeRemaining: 0,
+        spacePressed: false,
+        answerSelectedAfterSpace: false,
+        manuallyNavigated: false,
+        isProcessingNewQuestion: false
+    };
+
+    // ============================================================================
+    // DOM SELECTORS
+    // ============================================================================
+    
+    const getNextBtn = () => document.querySelector('button[aria-label*="next" i], button[aria-label="Next question" i]');
+    const getPrevBtn = () => document.querySelector('button[aria-label*="previous" i], button[aria-label="Previous question" i]');
+    const getCheckBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+        return buttons.find(b => {
+            const text = b.textContent?.trim();
+            return /check\s*answer|submit|verify|show\s*answer/i.test(text) && !b.disabled;
+        });
+    };
+
+    const getCGroupBtn = () => [...document.querySelectorAll('button')]
+        .find(b => {
+            const text = b.textContent?.trim();
+            return text === 'Official' || text === 'Community';
+        });
+
+    const getExplainBtn = () => [...document.querySelectorAll('button')]
+        .find(b => b.textContent?.trim() === 'Explain');
+
+    const getAnswerButtons = () => {
+        const potentialAnswerContainers = document.querySelectorAll('div.select-none.border.p-3.shadow-md.cursor-pointer');
+        
+        return Array.from(potentialAnswerContainers).filter(container => {
+            const firstChild = container.firstElementChild;
+            if (firstChild && firstChild.textContent) {
+                const text = firstChild.textContent.trim();
+                return ['A', 'B', 'C', 'D', 'E'].includes(text);
+            }
+            return false;
+        });
+    };
+
+    const getQuestionText = () => {
+        const questionElement = document.querySelector('h1, h2, [class*="question"]');
+        return questionElement ? questionElement.textContent.trim() : null;
+    };
+
+    // ============================================================================
+    // UTILITY FUNCTIONS
+    // ============================================================================
+
+    const isDarkMode = () => {
+        if (document.documentElement.classList.contains('dark')) {
+            return true;
+        }
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    };
+
+    function playNotificationSound() {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
+            oscillator.start(audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+            oscillator.stop(audioContext.currentTime + 0.5);
+        } catch (e) {
+            console.warn('[Auto-Advance] Could not play notification sound:', e);
+        }
+    }
+
+    // ============================================================================
+    // DYNAMIC ISLAND TIMER DISPLAY
+    // ============================================================================
+    
+    function createDynamicIslandTimer() {
+        const island = document.createElement('div');
+        island.id = 'eqe-dynamic-island';
+        
+        const isDark = isDarkMode();
+
+        // Gradient colors for question and answer phases
+        const questionGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+        const answerGradient = 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
+
+        Object.assign(island.style, {
+            position: 'fixed',
+            top: '10px',
+            left: '50%',
+            transform: 'translateX(-50%) scale(0.8)',
+            minWidth: '180px',
+            height: '44px',
+            background: questionGradient,
+            borderRadius: '22px',
+            zIndex: '999999',
+            display: 'none',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0 20px',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+            fontSize: '15px',
+            fontWeight: '600',
+            color: 'white',
+            cursor: 'default',
+            userSelect: 'none',
+            backdropFilter: 'blur(20px)',
+            transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            opacity: '0'
+        });
+
+        // Store gradient values
+        island.dataset.questionGradient = questionGradient;
+        island.dataset.answerGradient = answerGradient;
+
+        return island;
+    }
+
+    function updateDynamicIslandTimer() {
+        const island = document.getElementById('eqe-dynamic-island');
+        if (!island) return;
+
+        // Only show when auto-advance is enabled and we have an active phase
+        if (!config.autoAdvanceEnabled || !state.currentPhase) {
+            // Fade out animation
+            island.style.opacity = '0';
+            island.style.transform = 'translateX(-50%) scale(0.8)';
+            setTimeout(() => {
+                island.style.display = 'none';
+            }, 400);
+            return;
+        }
+
+        // Show island with fade in
+        if (island.style.display === 'none') {
+            island.style.display = 'flex';
+            setTimeout(() => {
+                island.style.opacity = '1';
+                island.style.transform = 'translateX(-50%) scale(1)';
+            }, 10);
+        }
+
+        // Update content and styling based on phase
+        const phase = state.currentPhase === 'question' ? 'Question' : 'Answer';
+        const gradient = state.currentPhase === 'question' 
+            ? island.dataset.questionGradient 
+            : island.dataset.answerGradient;
+        
+        // Emoji indicators
+        const emoji = state.currentPhase === 'question' ? '❓' : '✅';
+        
+        // Create pulsing effect when time is running low
+        const isLowTime = state.timeRemaining <= 3 && state.timeRemaining > 0;
+        
+        island.style.background = gradient;
+        
+        if (state.timeRemaining > 0) {
+            island.innerHTML = `
+                <span style="margin-right: 8px; font-size: 18px;">${emoji}</span>
+                <span style="opacity: 0.9; margin-right: 8px;">${phase}</span>
+                <span style="
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-variant-numeric: tabular-nums;
+                    min-width: 32px;
+                    text-align: center;
+                    ${isLowTime ? 'animation: pulse 1s infinite;' : ''}
+                ">${state.timeRemaining}s</span>
+            `;
+            
+            // Add pulsing animation for low time
+            if (isLowTime && !document.getElementById('eqe-pulse-animation')) {
+                const style = document.createElement('style');
+                style.id = 'eqe-pulse-animation';
+                style.textContent = `
+                    @keyframes pulse {
+                        0%, 100% { transform: scale(1); }
+                        50% { transform: scale(1.1); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        } else if (state.currentPhase) {
+            // Show completion state briefly
+            island.innerHTML = `
+                <span style="margin-right: 8px; font-size: 18px;">${emoji}</span>
+                <span style="opacity: 0.9; margin-right: 8px;">${phase}</span>
+                <span style="font-size: 20px; font-weight: 700;">✓</span>
+            `;
+        }
+
+        // Expand island width based on content
+        const contentWidth = island.scrollWidth;
+        if (contentWidth > 180) {
+            island.style.minWidth = contentWidth + 'px';
+        }
+    }
+
+    function startCountdown(durationInSeconds) {
+        stopCountdown();
+        
+        state.timeRemaining = durationInSeconds;
+        updateDynamicIslandTimer();
+        
+        state.countdownInterval = setInterval(() => {
+            state.timeRemaining--;
+            updateDynamicIslandTimer();
+            
+            if (state.timeRemaining < 0) {
+                state.timeRemaining = 0;
+                updateDynamicIslandTimer();
+            }
+        }, 1000);
+    }
+
+    function stopCountdown() {
+        if (state.countdownInterval) {
+            clearInterval(state.countdownInterval);
+            state.countdownInterval = null;
+        }
+    }
+
+    function hideTimer() {
+        stopCountdown();
+        state.timeRemaining = 0;
+        state.currentPhase = null;
+        updateDynamicIslandTimer();
+    }
+
+    // ============================================================================ 
+    // SETTINGS UI
+    // ============================================================================ 
+    
+    function createGearIcon() {
+        const gear = document.createElement('div');
+        gear.id = 'eqe-auto-advance-gear';
+        gear.innerHTML = '⚙️';
+        
+        const isDark = isDarkMode();
+        const lightColors = {
+            bgColor: 'rgba(255, 255, 255, 0.95)',
+            borderColor: '#3b82f6',
+            textColor: '#1f2937'
+        };
+        const darkColors = {
+            bgColor: 'rgba(31, 41, 55, 0.95)',
+            borderColor: '#60a5fa',
+            textColor: '#f3f4f6'
+        };
+        const colors = isDark ? darkColors : lightColors;
+
+        Object.assign(gear.style, {
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            fontSize: '32px',
+            cursor: 'move',
+            zIndex: '999999',
+            backgroundColor: colors.bgColor,
+            border: `2px solid ${colors.borderColor}`,
+            borderRadius: '50%',
+            width: '50px',
+            height: '50px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+            userSelect: 'none',
+            transition: 'transform 0.2s',
+            color: colors.textColor
+        });
+
+        gear.addEventListener('mouseenter', () => {
+            gear.style.transform = 'scale(1.1)';
+        });
+        gear.addEventListener('mouseleave', () => {
+            gear.style.transform = 'scale(1)';
+        });
+
+        makeDraggable(gear);
+        
+        gear.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            toggleSettings();
+        });
+
+        return gear;
+    }
+
+    function makeDraggable(element) {
+        let isDragging = false;
+        let startX, startY, initialX, initialY;
+        let clickTime = 0;
+
+        element.addEventListener('mousedown', (e) => {
+            const now = Date.now();
+            if (now - clickTime < 300) return;
+            clickTime = now;
+            
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            
+            const rect = element.getBoundingClientRect();
+            initialX = rect.left;
+            initialY = rect.top;
+            
+            element.style.cursor = 'grabbing';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            element.style.left = (initialX + dx) + 'px';
+            element.style.top = (initialY + dy) + 'px';
+            element.style.right = 'auto';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                element.style.cursor = 'move';
+            }
+        });
+    }
+
+    function createSettingsPanel() {
+        const panel = document.createElement('div');
+        panel.id = 'eqe-auto-advance-settings';
+        panel.style.display = 'none';
+        
+        const isDark = isDarkMode();
+        const lightColors = {
+            panelBg: 'white',
+            panelBorder: '#3b82f6',
+            h3Color: '#1f2937',
+            labelColor: '#4b5563',
+            inputBorder: '#d1d5db',
+            smallColor: '#6b7280',
+            borderTop: '#e5e7eb',
+            saveBtnBg: '#3b82f6',
+            saveBtnText: 'white',
+            closeBtnBg: '#6b7280',
+            closeBtnText: 'white',
+            kbdBg: '#f3f4f6',
+            kbdBorder: '#d1d5db',
+            kbdText: '#374151'
+        };
+        const darkColors = {
+            panelBg: '#1f2937',
+            panelBorder: '#60a5fa',
+            h3Color: '#f3f4f6',
+            labelColor: '#d1d5db',
+            inputBorder: '#4b5563',
+            smallColor: '#9ca3af',
+            borderTop: '#374151',
+            saveBtnBg: '#60a5fa',
+            saveBtnText: '#1f2937',
+            closeBtnBg: '#4b5563',
+            closeBtnText: '#f3f4f6',
+            kbdBg: '#374151',
+            kbdBorder: '#4b5563',
+            kbdText: '#d1d5db'
+        };
+        const colors = isDark ? darkColors : lightColors;
+
+        Object.assign(panel.style, {
+            position: 'fixed',
+            top: '80px',
+            right: '20px',
+            backgroundColor: colors.panelBg,
+            border: `2px solid ${colors.panelBorder}`,
+            borderRadius: '12px',
+            padding: '20px',
+            zIndex: '999999',
+            boxShadow: '0 8px 16px rgba(0, 0, 0, 0.2)',
+            minWidth: '320px',
+            maxWidth: '400px',
+            fontFamily: 'Arial, sans-serif',
+            maxHeight: '80vh',
+            overflowY: 'auto'
+        });
+
+        panel.innerHTML = `
+            <h3 style="margin: 0 0 15px 0; color: ${colors.h3Color}; font-size: 18px;">⚙️ Auto-Advance Settings</h3>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                    <input type="checkbox" id="eqe-enable-autoadvance" ${config.autoAdvanceEnabled ? 'checked' : ''} 
+                           style="width: 18px; height: 18px; cursor: pointer;">
+                    <span style="font-weight: 600; color: ${colors.labelColor};">Enable Auto-Advance</span>
+                </label>
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
+                    Question Timer (seconds):
+                </label>
+                <input type="number" id="eqe-question-timer" value="${config.questionTimer}" 
+                       min="1" max="300" 
+                       style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
+                <small style="color: ${colors.smallColor};">Time before auto-selecting an answer</small>
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
+                    Answer Timer (seconds):
+                </label>
+                <input type="number" id="eqe-answer-timer" value="${config.answerTimer}" 
+                       min="1" max="300"
+                       style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
+                <small style="color: ${colors.smallColor};">Time to view answer before next question</small>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="eqe-save-settings" 
+                        style="flex: 1; padding: 10px; background: ${colors.saveBtnBg}; color: ${colors.saveBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Save
+                </button>
+                <button id="eqe-close-settings" 
+                        style="flex: 1; padding: 10px; background: ${colors.closeBtnBg}; color: ${colors.closeBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Close
+                </button>
+            </div>
+            
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid ${colors.borderTop};">
+                <h4 style="margin: 0 0 10px 0; color: ${colors.h3Color}; font-size: 14px; font-weight: 600;">⌨️ Keyboard Shortcuts</h4>
+                <div style="font-size: 12px; color: ${colors.smallColor}; line-height: 1.8;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">1-5</kbd> or <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A-E</kbd></span>
+                        <span style="color: ${colors.labelColor};">Select answer</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Space</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Enter</kbd></span>
+                        <span style="color: ${colors.labelColor};">Check answer</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">← →</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">↑ ↓</kbd></span>
+                        <span style="color: ${colors.labelColor};">Navigate questions</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">C</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Official/Community</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
+                        <span style="color: ${colors.labelColor};">Open Explain</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
+                        <span style="color: ${colors.labelColor};">Pause/Resume Auto-Advance</span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        panel.querySelector('#eqe-save-settings').addEventListener('click', saveSettings);
+        panel.querySelector('#eqe-close-settings').addEventListener('click', toggleSettings);
+        
+        return panel;
+    }
+
+    function toggleSettings() {
+        const panel = document.getElementById('eqe-auto-advance-settings');
+        if (panel.style.display === 'none') {
+            panel.style.display = 'block';
+        } else {
+            panel.style.display = 'none';
+        }
+    }
+
+    function saveSettings() {
+        const questionTimer = parseInt(document.getElementById('eqe-question-timer').value);
+        const answerTimer = parseInt(document.getElementById('eqe-answer-timer').value);
+        const autoAdvanceEnabled = document.getElementById('eqe-enable-autoadvance').checked;
+
+        if (questionTimer >= 1 && answerTimer >= 1) {
+            const wasEnabled = config.autoAdvanceEnabled;
+            
+            config.questionTimer = questionTimer;
+            config.answerTimer = answerTimer;
+            config.autoAdvanceEnabled = autoAdvanceEnabled;
+
+            GM_setValue('questionTimer', questionTimer);
+            GM_setValue('answerTimer', answerTimer);
+            GM_setValue('autoAdvanceEnabled', autoAdvanceEnabled);
+
+            showToast('✓ Settings saved successfully!', 'success');
+            toggleSettings();
+            
+            if (autoAdvanceEnabled && !wasEnabled) {
+                if (state.currentPhase) {
+                    startTimer();
+                } else {
+                    onQuestionLoad();
+                }
+            } else if (!autoAdvanceEnabled && wasEnabled) {
+                clearTimer();
+                hideTimer();
+            } else if (autoAdvanceEnabled && state.currentPhase) {
+                startTimer();
+            }
+        } else {
+            showToast('⚠️ Timers must be at least 1 second', 'warning');
+        }
+    }
+
+    // ============================================================================
+    // TOAST NOTIFICATION
+    // ============================================================================
+
+    function showToast(message, type = 'info') {
+        const existingToast = document.getElementById('eqe-toast');
+        if (existingToast) {
+            existingToast.remove();
+        }
+
+        const isDark = isDarkMode();
+        const toast = document.createElement('div');
+        toast.id = 'eqe-toast';
+
+        const colors = {
+            success: isDark ? '#10b981' : '#059669',
+            warning: isDark ? '#f59e0b' : '#d97706',
+            info: isDark ? '#3b82f6' : '#2563eb'
+        };
+
+        Object.assign(toast.style, {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+            color: isDark ? '#f3f4f6' : '#1f2937',
+            padding: '12px 20px',
+            borderRadius: '8px',
+            border: `2px solid ${colors[type]}`,
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+            zIndex: '9999999',
+            fontSize: '14px',
+            fontWeight: '600',
+            fontFamily: 'Arial, sans-serif',
+            animation: 'slideIn 0.3s ease-out'
+        });
+
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        if (!document.getElementById('eqe-toast-style')) {
+            const style = document.createElement('style');
+            style.id = 'eqe-toast-style';
+            style.textContent = `
+                @keyframes slideIn {
+                    from {
+                        transform: translateX(400px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        setTimeout(() => {
+            toast.style.animation = 'slideIn 0.3s ease-out reverse';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    // ============================================================================ 
+    // TIMER LOGIC
+    // ============================================================================ 
+    
+    function clearTimer() {
+        if (state.timerHandle) {
+            clearTimeout(state.timerHandle);
+            state.timerHandle = null;
+        }
+    }
+
+    function startTimer() {
+        if (!config.autoAdvanceEnabled) {
+            hideTimer();
+            return;
+        }
+        
+        clearTimer();
+        
+        if (state.currentPhase === 'question') {
+            startQuestionTimer();
+        } else if (state.currentPhase === 'answer') {
+            startAnswerTimer();
+        }
+    }
+
+    function startQuestionTimer() {
+        startCountdown(config.questionTimer);
+        
+        state.timerHandle = setTimeout(() => {
+            state.timeRemaining = 0;
+            updateDynamicIslandTimer();
+            
+            if (!state.isAnswerSelected) {
+                selectRandomAnswer(); 
+            }
+
+            if (state.isAnswerSelected) {
+                playNotificationSound();
+                setTimeout(() => {
+                    const btn = getCheckBtn();
+                    if (btn) {
+                        const spaceKeyEvent = new KeyboardEvent('keydown', {
+                            key: ' ',
+                            code: 'Space',
+                            bubbles: true
+                        });
+                        document.dispatchEvent(spaceKeyEvent);
+                    }
+                }, 500);
+            }
+        }, config.questionTimer * 1000);
+    }
+
+    function startAnswerTimer() {
+        startCountdown(config.answerTimer);
+        
+        state.timerHandle = setTimeout(() => {
+            state.timeRemaining = 0;
+            updateDynamicIslandTimer();
+
+            playNotificationSound();
+            
+            setTimeout(() => {
+                hideTimer();
+                
+                const nextBtn = getNextBtn();
+                if (nextBtn) {
+                    const arrowRightEvent = new KeyboardEvent('keydown', {
+                        key: 'ArrowRight',
+                        code: 'ArrowRight',
+                        bubbles: true
+                    });
+                    document.dispatchEvent(arrowRightEvent);
+                }
+            }, 800);
+        }, config.answerTimer * 1000);
+    }
+
+    function selectRandomAnswer() {
+        const answerButtons = getAnswerButtons();
+        
+        if (answerButtons.length > 0) {
+            const randomIndex = Math.floor(Math.random() * answerButtons.length);
+            const selectedButton = answerButtons[randomIndex];
+            selectedButton.click();
+            
+            state.isAnswerSelected = true;
+            return;
+        }
+
+        const options = ['1', '2', '3', '4', '5'];
+        const randomOption = options[Math.floor(Math.random() * options.length)];
+        
+        const keyEvent = new KeyboardEvent('keydown', {
+            key: randomOption,
+            code: `Digit${randomOption}`,
+            bubbles: true
+        });
+        document.dispatchEvent(keyEvent);
+        
+        state.isAnswerSelected = true;
+    }
+
+    function onQuestionLoad() {
+        if (state.isProcessingNewQuestion) {
+            return;
+        }
+        state.isProcessingNewQuestion = true;
+
+        try {
+            const currentQuestion = getQuestionText();
+            
+            const shouldForceTimerStart = state.manuallyNavigated; 
+            if (state.manuallyNavigated) {
+                state.manuallyNavigated = false; 
+            }
+
+            if (currentQuestion && (currentQuestion !== state.lastQuestionText || shouldForceTimerStart)) {
+                state.lastQuestionText = currentQuestion;
+                state.currentPhase = 'question';
+                state.isAnswerSelected = false;
+                state.spacePressed = false;
+                state.answerSelectedAfterSpace = false;                
+                
+                if (config.autoAdvanceEnabled) {
+                    startTimer();
+                } else {
+                    hideTimer();
+                }
+            }
+        } finally {
+            state.isProcessingNewQuestion = false;
+        }
+    }
+
+    // ============================================================================ 
+    // KEYBOARD HANDLER
+    // ============================================================================ 
+    
+    function handleKeydown(e) {
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+            if (!document.activeElement.id.startsWith('eqe-')) return;
+        }
+
+        const key = e.key.toLowerCase();
+
+        if (key === 'c') {
+            const cBtn = getCGroupBtn();
+            if (cBtn) {
+                cBtn.click();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === 'a' && e.shiftKey) {
+            const autoAdvanceCheckbox = document.getElementById('eqe-enable-autoadvance');
+            if (autoAdvanceCheckbox) {
+                const newState = !autoAdvanceCheckbox.checked;
+                autoAdvanceCheckbox.checked = newState;
+                
+                config.autoAdvanceEnabled = newState;
+                GM_setValue('autoAdvanceEnabled', newState);
+                
+                const statusText = newState ? 'resumed ▶️' : 'paused ⏸️';
+                showToast(`Auto-Advance ${statusText}`, newState ? 'success' : 'info');
+                
+                if (newState) {
+                    if (state.currentPhase) {
+                        startTimer();
+                    } else {
+                        onQuestionLoad();
+                    }
+                } else {
+                    clearTimer();
+                    hideTimer();
+                }
+                
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === 'a' && !e.shiftKey) {
+            const aBtn = getExplainBtn();
+            if (aBtn) {
+                aBtn.click();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (['1', '2', '3', '4', '5'].includes(key)) {
+            state.isAnswerSelected = true;
+            
+            if (state.spacePressed && !state.answerSelectedAfterSpace) {
+                state.answerSelectedAfterSpace = true;
+            }
+        }
+
+        if (e.key === ' ' || e.key === 'Enter') {
+            const btn = getCheckBtn();
+            if (btn) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                
+                if (!state.spacePressed) {
+                    state.spacePressed = true;
+                    
+                    if (!state.isAnswerSelected) {
+                        return;
+                    } else {
+                        btn.click();
+                        
+                        clearTimer();
+                        setTimeout(() => {
+                            state.currentPhase = 'answer';
+                            if (config.autoAdvanceEnabled) {
+                                startAnswerTimer();
+                            } else {
+                                hideTimer();
+                            }
+                        }, 300);
+                    }
+                } else if (state.answerSelectedAfterSpace) {
+                    btn.click();
+                    
+                    clearTimer();
+                    setTimeout(() => {
+                        state.currentPhase = 'answer';
+                        state.spacePressed = false;
+                        state.answerSelectedAfterSpace = false;
+                        if (config.autoAdvanceEnabled) {
+                            startAnswerTimer();
+                        } else {
+                            hideTimer();
+                        }
+                    }, 300);
+                } else {
+                    btn.click();
+                }
+            }
+            return;
+        }
+
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+
+        e.preventDefault();
+        e.stopImmediatePropagation();
+
+        clearTimer();
+        stopCountdown();
+
+        state.manuallyNavigated = true;
+
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            getNextBtn()?.click();
+            setTimeout(() => {
+                state.lastQuestionText = null;
+                onQuestionLoad();
+            }, 200);
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            getPrevBtn()?.click();
+            setTimeout(() => {
+                state.lastQuestionText = null;
+                onQuestionLoad();
+            }, 200);
+        }
+    }
+
+    // ============================================================================
+    // INITIALIZATION
+    // ============================================================================
+    
+    function init() {
+        if (document.getElementById('eqe-auto-advance-gear')) return;
+
+        const gear = createGearIcon();
+        const settings = createSettingsPanel();
+        const island = createDynamicIslandTimer();
+        
+        document.body.appendChild(gear);
+        document.body.appendChild(settings);
+        document.body.appendChild(island);
+
+        document.addEventListener('keydown', handleKeydown, true);
+
+        setTimeout(() => {
+            state.lastQuestionText = getQuestionText();
+            if (config.autoAdvanceEnabled) {
+                onQuestionLoad();
+            }
+        }, 500);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    setTimeout(init, 1000);
+})();

@@ -1,0 +1,52 @@
+### Analysis of Rayyan's "E-QE fmpm Auto Solver"
+
+**Functionality Overview:**
+
+This script is designed for full automation, not just assistance. Its primary function is to:
+1.  **Fetch Questions via API:** It makes a GET request to `/api/questions` using the `mode` and `modeId` from the URL.
+2.  **Parse Question Data:** It uses a clever recursive function (`findQuestionsArray`) to locate the actual question data within the (potentially complex) JSON response.
+3.  **Determine Answers:** It prioritizes:
+    *   Options marked `correct: true`.
+    *   Failing that, options with the highest `pollPercentage` (crowd wisdom).
+    *   As a fail-safe, the very first option.
+4.  **Submit Answers via API:** It constructs an `answers` object and sends it via POST to `/api/questions/answer`.
+5.  **XP Tracking:** It fetches session data to display user's current XP level and progress in an injected UI bar.
+6.  **Control UI:** Injects "Solve" (single pass) and "Loop" (continuous solving) buttons, often near the "Exit" button.
+7.  **Robustness:** Uses a `MutationObserver` to ensure its buttons are injected even if the DOM changes dynamically.
+
+---
+
+**Key Learnings and Benefits for Our Auto-Advance Script:**
+
+1.  **Direct API Interaction (High Potential Benefit):**
+    *   **What we can learn:** Rayyan's script demonstrates that `e-qe.online` has public API endpoints for fetching questions and submitting answers. Our auto-advance script currently simulates UI clicks (`btn.click()`, `document.dispatchEvent(keyEvent)`).
+    *   **Benefit to our script:** Direct API calls are significantly more robust against UI changes (like button text changes, class changes, or element re-rendering) than DOM selectors and simulated clicks.
+    *   **Potential Enhancement:** We could refactor parts of our script to:
+        *   Submit the "Check Answer" action directly via the `/api/questions/answer` endpoint, bypassing `getCheckBtn().click()`.
+        *   Advance to the next question by re-fetching questions or by knowing the navigation method if the API provides it, making `getNextBtn().click()` more resilient or unnecessary.
+        *   **Future Possibility (Auto-Solve):** If the user desired, our script could even retrieve the *correct* answer from the API and automatically select it, turning it into an auto-solver before advancing. This changes the script's core purpose but shows the API's power.
+
+2.  **Dynamic UI Styling (`getModuleStyle`):**
+    *   **What we can learn:** This function extracts gradient and basic styling classes directly from existing elements on the page (like a "Community" button or a header icon).
+    *   **Benefit to our script:** Our script's UI (gear icon, settings panel, dynamic island) currently uses hardcoded light/dark mode colors and gradients. By adopting a similar `getModuleStyle()` approach, we could make our injected UI blend seamlessly with the website's *current* aesthetic, even if `e-qe.online` updates its theme or introduces new gradient styles. This would make our script's UI feel more "native."
+
+3.  **Robust Data Parsing (`findQuestionsArray`):**
+    *   **What we can learn:** This recursive function is designed to dig into complex, nested JSON objects to find a specific array of questions.
+    *   **Benefit to our script:** While our script primarily interacts with the DOM, understanding the structure of the data the site's JavaScript works with can be valuable. If our `getQuestionText()` or answer selectors become unreliable due to obfuscation or highly dynamic content, a deeper understanding of the underlying data (if exposed) could offer more stable alternatives.
+
+4.  **XP Bar Integration (`updateXP`):**
+    *   **What we can learn:** The `updateXP()` function demonstrates how to retrieve and display user-specific data (points, level) from `/api/auth/session`.
+    *   **Benefit to our script:** This could be integrated into our Dynamic Island timer or settings panel to provide the user with additional context about their progress while they are using the auto-advance feature.
+
+---
+
+### Conclusion and Recommendations:
+
+Rayyan's Auto Solver script highlights the power of direct API interaction for a highly dynamic JavaScript-heavy site.
+
+The most immediate and beneficial takeaways for our auto-advance script are:
+
+*   **Adopt dynamic styling from `getModuleStyle()`:** This is a relatively easy win to improve the aesthetic integration of our UI elements with the site's theme.
+*   **Prioritize API interaction for critical actions:** If reliability issues persist with DOM-based clicks for "Check Answer" or "Next Question", refactoring to use API calls would make the script significantly more robust. This is a larger change but offers long-term stability.
+
+I recommend that we consider integrating `getModuleStyle()` into our script first to further enhance the UI's native feel.

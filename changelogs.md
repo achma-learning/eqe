@@ -26,3 +26,20 @@
     - **`8`**: Cycle Loadout (alternative to `T`).
 - Updated internal version and initialization logging to **7.3**.
 - Updated `shortcuts.txt` with new simplified shortcuts.
+
+## 2026-03-05 16:00 - Version 7.4
+- Added **Lesson Restriction**: Auto-advance timer only activates on `/lesson/` pages.
+- Added **View Image Shortcut**: Press **`I`** to quickly toggle the View Image modal.
+- Improved DOM selectors for better reliability with Next.js/React structure.
+- Updated internal version and initialization logging to **7.4**.
+
+## 2026-03-05 16:30 - Version 7.5
+- Added **Dynamic Course Switcher**:
+    - **Dashboard Scanner**: Automatically scrapes and saves course modules when visiting the Dashboard.
+    - **Module Selection Overlay**: New searchable 'Game Menu' style overlay to quickly switch between courses.
+    - **Shortcut `9`** or **`Shift + M`**: Open the Course Switcher overlay.
+    - **Shortcut `1-9`**: Quick-select module while overlay is open.
+- Added **Course Notification**: HUD toast now shows the current course name on `/lesson/` page load.
+- Added **Course Button (📚)** to Inline Controls for quick access to module switching.
+- Improved **HUD Toast**: Now more flexible, handling notifications without Q/A timers (e.g., current course info).
+- Updated internal version and initialization logging to **7.5**.

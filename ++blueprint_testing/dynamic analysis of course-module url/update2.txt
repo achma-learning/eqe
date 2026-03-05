@@ -1,0 +1,103 @@
+Based on your current userscript and the goal of creating a "Game-Style" course switcher, you can implement a **Module Selection Overlay** that mirrors the aesthetic of your timer loadouts.
+
+Below is the strategy and the code logic to integrate this feature.
+
+---
+
+### 🛠️ Step 1: Automated Course Scraper
+
+Add this function to run when you are on the `/dashboard` page. It targets the `grid` and `a` tags seen in your images to map course titles to their UUIDs.
+
+```javascript
+const scanAndSaveCourses = () => {
+    const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+    const courses = Array.from(courseLinks).map(link => {
+        // Targets the <h4> tag within the anchor for the course name
+        const nameElement = link.querySelector('h4'); 
+        return {
+            name: nameElement ? nameElement.innerText.trim() : "Unknown Module",
+            url: link.href,
+            [cite_start]id: link.href.split('/').pop() // Extracts the UUID [cite: 29]
+        };
+    });
+    
+    if (courses.length > 0) {
+        GM_setValue('saved_courses', courses);
+        showHUDToast("📚 Courses Scanned & Updated!");
+    }
+};
+
+```
+
+---
+
+### 🛠️ Step 2: The "Module Loadout" UI logic
+
+Since you want the same style as your timer loadouts, you should create a function that builds a semi-transparent grid overlay. Use the following logic to create the "Game Menu" feel:
+
+```javascript
+const showCourseSwitcher = () => {
+    const courses = GM_getValue('saved_courses', []);
+    if (courses.length === 0) return showHUDToast("❌ No courses found. Visit Dashboard first.");
+
+    const overlay = document.createElement('div');
+    overlay.className = 'game-menu-overlay'; // Use your existing blur/dark styles
+    overlay.innerHTML = `
+        <div class="menu-content">
+            <h2>Select Module</h2>
+            <div class="course-grid">
+                ${courses.map((c, i) => `
+                    <div class="course-card" onclick="window.location.href='${c.url}'">
+                        <span class="key-hint">${i + 1}</span>
+                        <p>${c.name}</p>
+                    </div>
+                `).join('')}
+            </div>
+            <p class="footer-hint">Press [Esc] to cancel</p>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+};
+
+```
+
+---
+
+### 🛠️ Step 3: Integrated Control Logic
+
+Update your `keydown` listener and inline controls to handle the new **Course Switcher** button and shortcuts.
+
+**Keyboard Controls:**
+
+* 
+**`Shift + M` or `9**`: Open the Course Switcher overlay.
+
+
+* 
+**`T`**: Continue to cycle your **Timer Loadouts** (⭐ → 🏎️ → 📝).
+
+
+
+**Button Integration:**
+Add a new button next to your existing timer preset button in the header.
+
+* **Icon**: Use a folder or book emoji (📂 / 📚).
+* **Action**: Click to open the Module Switcher overlay.
+
+---
+
+### 🛠️ Step 4: Visual Integration (CSS)
+
+Ensure the overlay matches the "HUD Chat" style with a dark background and blue accents.
+
+| Feature | Style Specification |
+| --- | --- |
+| **Background** | `rgba(0, 0, 0, 0.85)` with `backdrop-filter: blur(10px)` |
+| **Border** | `2px solid #3b82f6` for the active selection |
+| **Font** | Monospace for that "terminal" or "gaming" look |
+
+---
+
+### 🚀 Next Steps
+
+Would you like me to generate the **full updated `injectInlineControls` function** with both the Timer Loadout button and this new Module Switcher button combined?

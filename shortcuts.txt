@@ -19,10 +19,16 @@
 - **`Alt + T`** : Open Loadout Change Mode (Full Selection Table)
 - **Hold `T` (>1s)** : Open Loadout Change Mode (Full Selection Table)
 
+## Course Switcher & Modules
+- **`9`** or **`Shift + M`** : Open Course Switcher (Module Loadout Table)
+- **`1` – `9`** (While Switcher Open) : Select Module and Redirect
+
 ## Inline Button Controls
 - **Loadout Button** (⭐/🏎️/📝):
     - **Click** : Cycle to next loadout
     - **Hold (1s)** : Open Loadout Selection Table
+- **Course Button** (📚):
+    - **Click** : Open Course Switcher Overlay
 - **Toggle Button** (▶️/⏸️):
     - **Click** : Enable/Disable Auto-Advance
 - **Gear Button** (⚙️):

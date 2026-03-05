@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.5
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M)
+// @version      7.4
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -316,8 +316,7 @@
             pointerEvents: 'none'
         });
 
-        const timeInfo = (preset.q && preset.a && preset.q !== '-' && preset.a !== '-') ? ` | ${preset.q}s/${preset.a}s` : '';
-        toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span>${timeInfo} | ${preset.desc}`;
+        toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span> | ${preset.q}s/${preset.a}s | ${preset.desc}`;
         document.body.appendChild(toast);
 
         // Trigger animation
@@ -470,155 +469,6 @@
     }
 
     // ============================================================================
-    // COURSE SWITCHER & MODULE LOADOUTS
-    // ============================================================================
-
-    function scanAndSaveCourses() {
-        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
-        const courses = Array.from(courseLinks).map(link => {
-            const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
-            return {
-                name: nameElement ? nameElement.innerText.trim() : "Unknown Module",
-                url: link.href,
-                id: link.href.split('/').pop()
-            };
-        });
-
-        if (courses.length > 0) {
-            GM_setValue('saved_courses', courses);
-            console.log(`[Auto-Advance] Scanned ${courses.length} courses and saved to storage.`);
-        }
-    }
-
-    function showCourseSwitcher() {
-        const existing = document.getElementById('eqe-course-overlay');
-        if (existing) {
-            existing.remove();
-            return;
-        }
-
-        const courses = GM_getValue('saved_courses', []);
-        if (courses.length === 0) {
-            showHUDToast({
-                emoji: '❌',
-                name: 'Error',
-                desc: 'No courses found. Visit Dashboard first.'
-            });
-            return;
-        }
-
-        const isDark = isDarkMode();
-        const bg = isDark ? '#1f2937' : '#ffffff';
-        const text = isDark ? '#f3f4f6' : '#1f2937';
-        const border = isDark ? '#374151' : '#e5e7eb';
-
-        const overlay = document.createElement('div');
-        overlay.id = 'eqe-course-overlay';
-        Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
-            backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: '2000000',
-            backdropFilter: 'blur(4px)'
-        });
-
-        const panel = document.createElement('div');
-        Object.assign(panel.style, {
-            backgroundColor: bg,
-            color: text,
-            padding: '24px',
-            borderRadius: '16px',
-            border: '2px solid #3b82f6',
-            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            maxWidth: '500px',
-            width: '90%',
-            maxHeight: '80vh',
-            overflowY: 'auto'
-        });
-
-        let tableHtml = `
-            <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Select Course Module</h3>
-            <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; font-family: monospace;">
-                    <thead>
-                        <tr style="border-bottom: 2px solid ${border}; text-align: left;">
-                            <th style="padding: 12px 8px;">#</th>
-                            <th style="padding: 12px 8px;">Course Name</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-
-        courses.forEach((c, i) => {
-            const isCurrent = window.location.href.includes(c.id);
-            tableHtml += `
-                <tr class="eqe-course-row" data-url="${c.url}" style="cursor: pointer; border-bottom: 1px solid ${border}; ${isCurrent ? 'background: rgba(59, 130, 246, 0.1);' : ''}">
-                    <td style="padding: 12px 8px; font-weight: bold;">${i + 1}</td>
-                    <td style="padding: 12px 8px;">${c.name}</td>
-                </tr>
-            `;
-        });
-
-        tableHtml += `
-                    </tbody>
-                </table>
-            </div>
-            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Click a row or press 1-9 to select • [Esc] to close</p>
-        `;
-
-        panel.innerHTML = tableHtml;
-        overlay.appendChild(panel);
-        document.body.appendChild(overlay);
-
-        const closeOnEsc = (e) => {
-            if (e.key === 'Escape') {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-                window.removeEventListener('keydown', handleNumberNav);
-            }
-        };
-
-        const handleNumberNav = (e) => {
-            const num = parseInt(e.key);
-            if (!isNaN(num) && num > 0 && num <= courses.length && !e.shiftKey && !e.ctrlKey && !e.altKey) {
-                window.location.href = courses[num - 1].url;
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-                window.removeEventListener('keydown', handleNumberNav);
-            }
-        };
-
-        window.addEventListener('keydown', closeOnEsc);
-        window.addEventListener('keydown', handleNumberNav);
-
-        panel.querySelectorAll('.eqe-course-row').forEach(row => {
-            row.onclick = () => {
-                window.location.href = row.dataset.url;
-                overlay.remove();
-            };
-            row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
-            row.onmouseout = () => {
-                const isCurrent = window.location.href.includes(row.dataset.url.split('/').pop());
-                row.style.backgroundColor = isCurrent ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
-            };
-        });
-
-        overlay.onclick = (e) => {
-            if (e.target === overlay) {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-                window.removeEventListener('keydown', handleNumberNav);
-            }
-        };
-    }
-
-    // ============================================================================
     // INLINE CONTROLS UI
     // ============================================================================
 
@@ -689,15 +539,6 @@
                 cyclePreset();
             };
 
-            const btnCourse = document.createElement('button');
-            btnCourse.id = 'eqe-btn-course';
-            btnCourse.className = buttonStyleClass;
-            btnCourse.style.cursor = 'pointer';
-            btnCourse.style.fontSize = '18px';
-            btnCourse.innerHTML = '📚';
-            btnCourse.title = "Course Switcher (Shift+M or 9)";
-            btnCourse.onclick = () => showCourseSwitcher();
-
             const btnToggle = document.createElement('button');
             btnToggle.id = 'eqe-btn-toggle';
             btnToggle.className = buttonStyleClass;
@@ -721,7 +562,6 @@
             btnGear.onclick = () => toggleSettings();
 
             container.appendChild(btnLoadout);
-            container.appendChild(btnCourse);
             container.appendChild(btnToggle);
             container.appendChild(btnGear);
 
@@ -1417,13 +1257,6 @@
             return;
         }
 
-        if (key === '9' || (key === 'm' && e.shiftKey)) {
-            showCourseSwitcher();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
         if (e.key === 'Escape') {
             const settings = document.getElementById('eqe-auto-advance-settings');
             if (settings && settings.style.display !== 'none') {
@@ -1601,7 +1434,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.5 with Loadouts & Course Switcher...');
+        console.log('[Auto-Advance] Initializing v7.4 with Loadouts & /lesson/ restriction...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();
@@ -1618,33 +1451,11 @@
         registerEventListener(document, 'keydown', handleKeydown, true);
         registerEventListener(document, 'keyup', handleKeyup, true);
 
-        // Dashboard Scanning
-        if (window.location.href.includes('/dashboard')) {
-            scanAndSaveCourses();
-        }
-
         const initTimeoutId = registerTimeout(setTimeout(() => {
             state.lastQuestionText = getQuestionText();
             if (config.autoAdvanceEnabled) {
                 onQuestionLoad();
             }
-
-            // Current Course Notification on Lesson Page
-            if (window.location.href.includes('/lesson/')) {
-                const courses = GM_getValue('saved_courses', []);
-                const currentId = window.location.href.split('/').pop();
-                const currentCourse = courses.find(c => c.id === currentId);
-                if (currentCourse) {
-                    showHUDToast({
-                        emoji: '📍',
-                        name: 'Current Course',
-                        q: '-',
-                        a: '-',
-                        desc: currentCourse.name
-                    });
-                }
-            }
-
             cleanupRegistry.timeouts.delete(initTimeoutId);
         }, 500));
     }

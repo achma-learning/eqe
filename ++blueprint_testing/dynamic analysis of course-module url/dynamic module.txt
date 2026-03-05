@@ -1,0 +1,64 @@
+Since you are building tools for a unified search interface and productivity scripts, the best way to handle this is to scrape the dashboard links and store them as "Course Loadouts."
+
+### 1. The Scraping Logic (Dashboard)
+
+To auto-detect the course URLs, you need a function that runs on the dashboard page (`/dashboard`). Use the class structure seen in your images (the `grid` container and the `a` tags) to map the titles to their unique UUIDs.
+
+```javascript
+// Run this on the dashboard to collect your "Loadouts"
+const getCourseLoadouts = () => {
+    const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+    return Array.from(courseLinks).map(link => {
+        const titleElement = link.querySelector('h3') || link.querySelector('span'); // Adjust based on exact text location
+        return {
+            name: titleElement ? titleElement.innerText.trim() : "Unknown Course",
+            url: link.href,
+            id: link.href.split('/').pop() // Extracts the UUID
+        };
+    });
+};
+
+// Save to persistent storage for use on lesson pages
+GM_setValue('saved_courses', getCourseLoadouts());
+
+```
+
+---
+
+### 2. Integration: The "Quick Switch" Prompt
+
+Since you want to add a feature to quickly change courses with a shortcut, you can merge this logic with your existing **Game-Style Loadout** prompt. Here is the expanded prompt to give to your AI developer:
+
+#### 🛠️ Updated Developer Prompt: Course Switcher & Timer Loadouts
+
+"I need to expand my Userscript to include a **Course Quick-Switcher**. This should work alongside the Timer Loadouts.
+
+**1. Data Collection:**
+
+* On `https://www.e-qe.online/dashboard`, automatically scrape all `<a>` tags where the `href` contains `/dashboard/course/`.
+* Store these as an array of objects `{name, url}` in `GM_setValue`.
+
+**2. The Quick-Switch Feature:**
+
+* **Shortcut `Shift + m` or 9 :** Open a searchable 'Game Menu' (overlay) listing all detected courses.
+* **Selection:** Clicking a course or pressing its assigned number while the Open a searchable 'Game Menu' (overlay) listing all detected courses is visible(1-9) , should immediately redirect the user to that course URL.
+
+**3. Visual Integration:**
+
+* Add a small 'Course Label' next to the top-left HUD Chat toast.
+* If the user is on a `/lesson/` page, the toast should briefly show: `📍 Current Course: [Name]` on page load.
+
+**4. Code Request:**
+Please provide the `courseScanner` function for the dashboard and update the `keydown` listener to handle `Shift + C`. Ensure the UI matches the existing semi-transparent dark theme with `#3b82f6` accents."
+
+---
+
+### 3. How to analyze the URLs manually
+
+If you want to understand the pattern yourself from the images provided:
+
+* **The Root:** `https://www.e-qe.online/dashboard/course/`
+* **The Identifier:** The string after the last slash (e.g., `50c0fde4...`) is a **UUID**.
+* **The Target:** When building your script, you only need to swap that UUID to jump between different modules.
+
+Would you like me to generate the **CSS for the Course Switcher overlay** so it looks like a character selection screen from a game?

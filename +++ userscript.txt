@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.7
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
+// @version      7.8
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -1405,10 +1405,6 @@
     // ============================================================================
 
     function onQuestionLoad() {
-        if (!window.location.href.includes('/lesson/')) {
-            hideTimer();
-            return;
-        }
         if (state.questionLoadDebounce) {
             clearTimeout(state.questionLoadDebounce);
             cleanupRegistry.timeouts.delete(state.questionLoadDebounce);
@@ -1707,7 +1703,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.7 with Sidebar Toggle...');
+        console.log('[Auto-Advance] Initializing v7.8 with Fixed Auto-Advance...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

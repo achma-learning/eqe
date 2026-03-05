@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paniyolo Coloring - Lecture en Boucle</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 30px;
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        button {
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            padding: 20px 40px;
+            font-size: 20px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 6px 20px rgba(255,107,107,0.4);
+            font-weight: bold;
+        }
+        button:hover {
+            background: #ff5252;
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(255,107,107,0.6);
+        }
+        button:active {
+            transform: translateY(-1px);
+        }
+        .status {
+            margin: 20px 0;
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        .loop-info {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 15px;
+            margin-top: 20px;
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body>
+    <h1>🎸 Paniyolo Coloring</h1>
+    <p class="status" id="status">Appuyez pour démarrer</p>
+    
+    <button id="playBtn" onclick="togglePlay()">▶️ PLAY</button>
+
+    <div class="loop-info">
+        <strong>🔄 Lecture en boucle automatique</strong><br>
+        <small>Le son se relance automatiquement à la fin</small>
+    </div>
+
+    <audio id="paniyoloAudio" loop preload="auto" style="display:none;">
+        <source src="https://raw.githubusercontent.com/achma-learning/eqe/main/Paniyolo%20-%20Coloring-LFpHsbRrK4M.mp3" type="audio/mpeg">
+        Votre navigateur ne supporte pas l'audio HTML5.
+    </audio>
+
+    <script>
+        const audio = document.getElementById('paniyoloAudio');
+        const playBtn = document.getElementById('playBtn');
+        const status = document.getElementById('status');
+        let isPlaying = false;
+
+        function togglePlay() {
+            if (isPlaying) {
+                audio.pause();
+                playBtn.textContent = '▶️ PLAY';
+                playBtn.style.background = '#ff6b6b';
+                status.textContent = '⏸️ Musique en pause';
+                isPlaying = false;
+            } else {
+                audio.play();
+                playBtn.textContent = '⏸️ PAUSE';
+                playBtn.style.background = '#4ecdc4';
+                status.textContent = '🔊 Paniyolo Coloring en lecture...';
+                isPlaying = true;
+            }
+        }
+
+        // Gestion automatique des états
+        audio.addEventListener('play', () => {
+            playBtn.textContent = '⏸️ PAUSE';
+            playBtn.style.background = '#4ecdc4';
+            status.textContent = '🔊 Paniyolo Coloring en lecture...';
+            isPlaying = true;
+        });
+
+        audio.addEventListener('pause', () => {
+            playBtn.textContent = '▶️ PLAY';
+            playBtn.style.background = '#ff6b6b';
+            status.textContent = '⏸️ Musique en pause';
+            isPlaying = false;
+        });
+
+        audio.addEventListener('ended', () => {
+            // Redémarre automatiquement grâce à l'attribut loop
+            status.textContent = '🔄 Boucle terminée - Redémarrage...';
+        });
+    </script>
+</body>
+</html>

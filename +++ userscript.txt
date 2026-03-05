@@ -1740,8 +1740,8 @@
                 onQuestionLoad();
             }
 
-            // Current Course Notification on Lesson Page
-            if (window.location.href.includes('/lesson/')) {
+            // Current Course Notification on Lesson/Exam Page
+            if (window.location.href.includes('/lesson/') || window.location.href.includes('/exam/')) {
                 const courses = GM_getValue('saved_courses', []);
                 const currentId = window.location.href.split('/').pop();
                 const currentCourse = courses.find(c => c.id === currentId);

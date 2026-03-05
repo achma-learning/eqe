@@ -35,7 +35,8 @@ The userscript enhances `e-qe.online` with:
 ### Website Organization:
 *   **Main Page**: `https://www.e-qe.online/dashboard`
 *   **Course/Module Page**: `https://www.e-qe.online/dashboard/course/*`
-*   **Practice/MCQ Page**: `https://www.e-qe.online/lesson/*` (Auto-advance should only work here)
+*   **Practice/MCQ Page**: `https://www.e-qe.online/lesson/*` (Auto-advance works here)
+*   **Exam Page**: `https://www.e-qe.online/exam/*` (Auto-advance works here)
 
 ### Installation & Usage:
 To use `userscript.txt`, install a userscript manager (e.g., TamperMonkey) in your browser. Create a new script in the manager and paste the content of `userscript.txt`. It will activate automatically on `e-qe.online`.

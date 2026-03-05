@@ -1,7 +1,7 @@
 # EQE Auto-Advance Shortcuts & Controls
 
 ## General Navigation (Lesson & Exam Pages)
-- **`1` – `5`** or **`A` – `E`** : Select Answer
+- **`1` – `5`** : Select Answer
 - **`Space`** or **`Enter`** : Check/Submit Answer
 - **`←` `→` `↑` `↓`** : Navigate Questions (Previous/Next)
 - **`0`** or **`Shift + D`** : Go to Dashboard

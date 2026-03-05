@@ -10,6 +10,7 @@
 ## Script Features
 - **`H`** : Toggle Sidebar Visibility
 - **`I`** : View Image (Toggle modal if available)
+- **`P`** : Toggle Background Music (🔊/🔇)
 - **`C`** : Toggle Official/Community Answers
 - **`A`** : Open AI Explanation (Explain button)
 - **`Shift + A`** or **`7`** : Enable/Disable Auto-Advance (Pause/Play)
@@ -23,7 +24,7 @@
 - **Hold `T` (>1s)** : Open Loadout Selection Table
 
 ## Course Switcher & Modules
-- **`9`** or **`Shift + M`** : Open Course Switcher (Full Module List)
+- **`M`** or **`9`** : Open Course Switcher (Full Module List)
 - **`1` – `9`** (While Switcher Open) : Select Module and Redirect
 
 ## Inline Button Controls (Top Right)
@@ -32,6 +33,8 @@
     - **Hold (1s)** : Open Loadout Selection Table
 - **Course Button** (📚):
     - **Click** : Open Course Switcher Overlay
+- **Music Button** (🔊/🔇):
+    - **Click** : Toggle Background Music (P)
 - **Toggle Button** (▶️/⏸️):
     - **Click** : Enable/Disable Auto-Advance
 - **Sidebar Button** (☰):

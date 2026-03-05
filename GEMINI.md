@@ -19,8 +19,10 @@ The userscript enhances `e-qe.online` with:
     *   `1-5`: Select answer.
     *   `C`: Toggle Official/Community button.
     *   `A`: Open Explain button.
-    *   `Shift + A` / `Shift + P`: Pause/Resume Auto-Advance.
-    *   `Shift + S`: Open/Close Settings Panel.
+    *   `P`: Toggle Background Music (🔊/🔇).
+    *   `M`: Open Course Quick-Switcher.
+    *   `Shift + A` / `Shift + P` (deprecated): Toggle Auto-Advance (now 7).
+    *   `Shift + S` / `6`: Open/Close Settings Panel.
     *   `Shift + ?`: Show Keyboard Shortcuts Help.
 
 ### Website Organization:

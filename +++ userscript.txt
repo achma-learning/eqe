@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.9
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
+// @version      8.1
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Background Music (P)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -24,6 +24,9 @@
         { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h' }
     ];
 
+    const AUDIO_SRC = 'https://raw.githubusercontent.com/achma-learning/eqe/main/Paniyolo%20-%20Coloring-LFpHsbRrK4M.mp3';
+    let audioInstance = null;
+
     let currentPresetIndex = GM_getValue('presetIndex', 0);
 
     let config = {
@@ -33,7 +36,8 @@
         islandTop: GM_getValue('islandTop', '10px'),
         islandLeft: GM_getValue('islandLeft', '50%'),
         autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
-        sidebarHidden: GM_getValue('sidebarHidden', false)
+        sidebarHidden: GM_getValue('sidebarHidden', false),
+        musicEnabled: GM_getValue('musicEnabled', false)
     };
 
     let state = {
@@ -730,6 +734,7 @@
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('H')} : Toggle Sidebar Visibility</li>
                     <li>${kbd('I')} : View Image</li>
+                    <li>${kbd('P')} : Toggle Background Music</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
@@ -744,7 +749,7 @@
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('T')} or ${kbd('8')} : Cycle Timer Loadout</li>
                     <li>${kbd('Shift + T')} or Hold ${kbd('T')} : Show Loadout Table</li>
-                    <li>${kbd('9')} or ${kbd('Shift + M')} : Open Course Switcher</li>
+                    <li>${kbd('M')} or ${kbd('9')} : Open Course Switcher</li>
                 </ul>
             </div>
 
@@ -790,6 +795,42 @@
         } else {
             sidebar.style.display = '';
             showToast('📐 Sidebar visible', 'info');
+        }
+    }
+
+    // ============================================================================
+    // BACKGROUND MUSIC
+    // ============================================================================
+
+    function getAudio() {
+        if (!audioInstance) {
+            audioInstance = new Audio(AUDIO_SRC);
+            audioInstance.loop = true;
+        }
+        return audioInstance;
+    }
+
+    function toggleMusic(btnElement) {
+        const audio = getAudio();
+        config.musicEnabled = !config.musicEnabled;
+        GM_setValue('musicEnabled', config.musicEnabled);
+
+        if (config.musicEnabled) {
+            audio.play().catch(e => {
+                console.warn('[Auto-Advance] Music play failed (requires interaction):', e);
+                config.musicEnabled = false;
+                GM_setValue('musicEnabled', false);
+                if (btnElement) btnElement.innerHTML = '🔇';
+                showToast('⚠️ Click page to allow music', 'warning');
+            });
+            if (config.musicEnabled) {
+                if (btnElement) btnElement.innerHTML = '🔊';
+                showToast('🔊 Music playing', 'success');
+            }
+        } else {
+            audio.pause();
+            if (btnElement) btnElement.innerHTML = '🔇';
+            showToast('🔇 Music paused', 'info');
         }
     }
 
@@ -870,8 +911,17 @@
             btnCourse.style.cursor = 'pointer';
             btnCourse.style.fontSize = '18px';
             btnCourse.innerHTML = '📚';
-            btnCourse.title = "Course Switcher (Shift+M or 9)";
+            btnCourse.title = "Course Switcher (M or 9)";
             btnCourse.onclick = () => showCourseSwitcher();
+
+            const btnMusic = document.createElement('button');
+            btnMusic.id = 'eqe-btn-music';
+            btnMusic.className = buttonStyleClass;
+            btnMusic.style.cursor = 'pointer';
+            btnMusic.style.fontSize = '18px';
+            btnMusic.innerHTML = config.musicEnabled ? '🔊' : '🔇';
+            btnMusic.title = "Toggle Background Music (P)";
+            btnMusic.onclick = () => toggleMusic(btnMusic);
 
             const btnToggle = document.createElement('button');
             btnToggle.id = 'eqe-btn-toggle';
@@ -912,6 +962,7 @@
 
             container.appendChild(btnLoadout);
             container.appendChild(btnCourse);
+            container.appendChild(btnMusic);
             container.appendChild(btnToggle);
             container.appendChild(btnSidebar);
             container.appendChild(btnShortcuts);
@@ -1213,6 +1264,10 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">I</kbd></span>
                         <span style="color: ${colors.labelColor};">View Image</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">P</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Music</span>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
@@ -1623,7 +1678,15 @@
             return;
         }
 
-        if (key === '9' || (key === 'm' && e.shiftKey)) {
+        if (key === 'p' && !e.shiftKey) {
+            const btnMusic = document.getElementById('eqe-btn-music');
+            toggleMusic(btnMusic);
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === 'm' || key === '9') {
             showCourseSwitcher();
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -1823,7 +1886,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.9 with Shortcuts Help...');
+        console.log('[Auto-Advance] Initializing v8.0 with Background Music...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();
@@ -1843,6 +1906,24 @@
             if (sidebar) {
                 sidebar.style.display = 'none';
             }
+        }
+
+        // Music Persistence (requires user interaction to play)
+        if (config.musicEnabled) {
+            const playMusicOnFirstInteraction = () => {
+                const audio = getAudio();
+                audio.play().then(() => {
+                    console.log('[Auto-Advance] Background music resumed');
+                    const btnMusic = document.getElementById('eqe-btn-music');
+                    if (btnMusic) btnMusic.innerHTML = '🔊';
+                }).catch(() => {
+                    // Still blocked or failed
+                });
+                document.removeEventListener('click', playMusicOnFirstInteraction);
+                document.removeEventListener('keydown', playMusicOnFirstInteraction);
+            };
+            document.addEventListener('click', playMusicOnFirstInteraction);
+            document.addEventListener('keydown', playMusicOnFirstInteraction);
         }
 
         registerEventListener(document, 'keydown', handleKeydown, true);

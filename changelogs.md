@@ -1,6 +1,20 @@
 # Changelogs
 
-## 2026-03-05 14:30 - Version 7.0
+## 2026-03-05 15:15 - Version 8.1
+- Updated keyboard shortcuts:
+    - **Course Switcher**: Changed from `Shift + M` to **`M`**.
+    - **Background Music**: Changed from `M` to **`P`**.
+- Updated HUD button tooltips and help overlays to reflect new shortcuts.
+
+## 2026-03-05 15:00 - Version 8.0
+- Added **Background Music** feature (🔊/🔇) with the track "Paniyolo - Coloring".
+- Implemented **M** keyboard shortcut to toggle music.
+- Added **Music Persistence**: Remembers music state (🔊/🔇) across sessions.
+- Integrated **Music HUD Control** button in the top-right toolbar.
+- Improved **Initial Interaction Handling**: Music resumes after first user click/keypress to comply with browser autoplay policies.
+- Updated internal version and initialization logging to **8.0**.
+
+## 2026-03-05 14:30 - Version 7.9
 - Added **Timer Loadout Presets** (⭐ Goldilocks, 🏎️ Velocity, 📝 Exam).
 - Implemented **HUD Chat Notification** system for preset changes.
 - Added **Cycle Loadout** button and keyboard shortcut (`T`).

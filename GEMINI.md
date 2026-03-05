@@ -32,6 +32,11 @@ The userscript enhances `e-qe.online` with:
     *   `Shift + A` / `Shift + P`: Pause/Resume Auto-Advance.
     *   `Shift + S`: Open/Close Settings Panel.
 
+### Website Organization:
+*   **Main Page**: `https://www.e-qe.online/dashboard`
+*   **Course/Module Page**: `https://www.e-qe.online/dashboard/course/*`
+*   **Practice/MCQ Page**: `https://www.e-qe.online/lesson/*` (Auto-advance should only work here)
+
 ### Installation & Usage:
 To use `userscript.txt`, install a userscript manager (e.g., TamperMonkey) in your browser. Create a new script in the manager and paste the content of `userscript.txt`. It will activate automatically on `e-qe.online`.
 

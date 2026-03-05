@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.3
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Dashboard exclusion • Improved UX (Esc to close) • New shortcuts (0,6,7,8)
+// @version      7.4
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -1161,7 +1161,7 @@
     // ============================================================================
 
     function onQuestionLoad() {
-        if (window.location.href.includes('/dashboard')) {
+        if (!window.location.href.includes('/lesson/')) {
             hideTimer();
             return;
         }
@@ -1434,7 +1434,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.3 with Loadouts & New Shortcuts...');
+        console.log('[Auto-Advance] Initializing v7.4 with Loadouts & /lesson/ restriction...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

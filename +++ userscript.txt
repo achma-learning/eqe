@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.5
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M)
+// @version      7.7
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Inline auto-advance controls with loadouts • Enhanced HUD notifications • /lesson/ restriction • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
     // ============================================================================
 
     const PRESETS = [
-        { id: 'goldilocks', emoji: '⭐', name: 'Goldilocks', q: 24, a: 12, desc: 'Daily Training' },
+        { id: 'goldilocks', emoji: '⭐', name: 'Default', q: 24, a: 12, desc: 'Daily Training' },
         { id: 'velocity', emoji: '🏎️', name: 'Velocity', q: 15, a: 5, desc: 'Finals crunch' },
         { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h' }
     ];
@@ -32,7 +32,8 @@
         autoAdvanceEnabled: GM_getValue('autoAdvanceEnabled', false),
         islandTop: GM_getValue('islandTop', '10px'),
         islandLeft: GM_getValue('islandLeft', '50%'),
-        autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true)
+        autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
+        sidebarHidden: GM_getValue('sidebarHidden', false)
     };
 
     let state = {
@@ -475,19 +476,60 @@
 
     function scanAndSaveCourses() {
         const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
-        const courses = Array.from(courseLinks).map(link => {
+        const uniqueCourses = [];
+        const seenNames = new Set();
+        const seenIds = new Set();
+
+        courseLinks.forEach(link => {
+            const id = link.href.split('/').pop();
             const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
-            return {
-                name: nameElement ? nameElement.innerText.trim() : "Unknown Module",
-                url: link.href,
-                id: link.href.split('/').pop()
-            };
+            let name = nameElement ? nameElement.innerText.trim() : "Unknown Module";
+
+            // Strip existing decoration if any (e.g., "press=[1] Module Name")
+            name = name.replace(/^(key=\d+|press=\[\d+\])\s+/, '');
+
+            const normalizedName = name.toLowerCase();
+
+            // Deduplicate by both ID and Name (case-insensitive) to prevent duplicates seen in UI
+            if (!seenIds.has(id) && !seenNames.has(normalizedName)) {
+                seenIds.add(id);
+                seenNames.add(normalizedName);
+                uniqueCourses.push({
+                    name: name,
+                    url: link.href,
+                    id: id
+                });
+            }
         });
 
-        if (courses.length > 0) {
-            GM_setValue('saved_courses', courses);
-            console.log(`[Auto-Advance] Scanned ${courses.length} courses and saved to storage.`);
+        if (uniqueCourses.length > 0) {
+            GM_setValue('saved_courses', uniqueCourses);
+            // console.log(`[Auto-Advance] Scanned ${uniqueCourses.length} unique courses.`);
         }
+    }
+
+    function decorateDashboardModules() {
+        if (!window.location.href.includes('/dashboard')) return;
+
+        const courses = GM_getValue('saved_courses', []);
+        if (courses.length === 0) return;
+
+        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+        courseLinks.forEach(link => {
+            const id = link.href.split('/').pop();
+            const courseIndex = courses.findIndex(c => c.id === id);
+
+            if (courseIndex !== -1) {
+                const num = courseIndex + 1;
+                const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
+                if (nameElement) {
+                    const desiredHtml = `<span style="color: #1793d1;">press=[${num}]</span> ${courses[courseIndex].name}`;
+                    if (nameElement.innerHTML !== desiredHtml) {
+                        nameElement.innerHTML = desiredHtml;
+                    }
+                }
+            }
+        });
     }
 
     function showCourseSwitcher() {
@@ -569,7 +611,7 @@
                     </tbody>
                 </table>
             </div>
-            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Click a row or press 1-9 to select • [Esc] to close</p>
+            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Press 1-9 to select • [Esc] to close</p>
         `;
 
         panel.innerHTML = tableHtml;
@@ -585,12 +627,17 @@
         };
 
         const handleNumberNav = (e) => {
-            const num = parseInt(e.key);
-            if (!isNaN(num) && num > 0 && num <= courses.length && !e.shiftKey && !e.ctrlKey && !e.altKey) {
-                window.location.href = courses[num - 1].url;
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-                window.removeEventListener('keydown', handleNumberNav);
+            // Only handle 1-9 for quick selection
+            if (/^[1-9]$/.test(e.key)) {
+                const num = parseInt(e.key);
+                if (num > 0 && num <= courses.length && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+                    window.location.href = courses[num - 1].url;
+                    overlay.remove();
+                    window.removeEventListener('keydown', closeOnEsc);
+                    window.removeEventListener('keydown', handleNumberNav);
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
             }
         };
 
@@ -616,6 +663,31 @@
                 window.removeEventListener('keydown', handleNumberNav);
             }
         };
+    }
+
+    // ============================================================================
+    // SIDEBAR TOGGLE
+    // ============================================================================
+
+    function toggleSidebar() {
+        // Find the sidebar (aside element)
+        const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
+        
+        if (!sidebar) {
+            console.log('[Auto-Advance] Sidebar not found');
+            return;
+        }
+
+        config.sidebarHidden = !config.sidebarHidden;
+        GM_setValue('sidebarHidden', config.sidebarHidden);
+
+        if (config.sidebarHidden) {
+            sidebar.style.display = 'none';
+            showToast('📐 Sidebar hidden', 'info');
+        } else {
+            sidebar.style.display = '';
+            showToast('📐 Sidebar visible', 'info');
+        }
     }
 
     // ============================================================================
@@ -713,6 +785,13 @@
 
             btnToggle.onclick = () => toggleAutoAdvance(btnToggle);
 
+            const btnSidebar = document.createElement('button');
+            btnSidebar.className = buttonStyleClass;
+            btnSidebar.title = "Toggle Sidebar (H)";
+            btnSidebar.style.cursor = 'pointer';
+            btnSidebar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`;
+            btnSidebar.onclick = () => toggleSidebar();
+
             const btnGear = document.createElement('button');
             btnGear.className = buttonStyleClass;
             btnGear.title = "Settings (Shift+S)";
@@ -723,6 +802,7 @@
             container.appendChild(btnLoadout);
             container.appendChild(btnCourse);
             container.appendChild(btnToggle);
+            container.appendChild(btnSidebar);
             container.appendChild(btnGear);
 
             exitBtn.parentNode.insertBefore(container, exitBtn);
@@ -1005,6 +1085,10 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">← →</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">↑ ↓</kbd></span>
                         <span style="color: ${colors.labelColor};">Navigate questions</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">H</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Sidebar</span>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">C</kbd></span>
@@ -1386,6 +1470,20 @@
 
         const key = e.key.toLowerCase();
 
+        // Direct module selection on Dashboard
+        if (/^[1-9]$/.test(key) && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+            if (window.location.href.includes('/dashboard')) {
+                const courses = GM_getValue('saved_courses', []);
+                const num = parseInt(key);
+                if (num > 0 && num <= courses.length) {
+                    window.location.href = courses[num - 1].url;
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    return;
+                }
+            }
+        }
+
         if (key === '0' || (key === 'd' && e.shiftKey)) {
             window.location.href = 'https://www.e-qe.online/dashboard';
             e.preventDefault();
@@ -1499,6 +1597,14 @@
             return;
         }
 
+        // Handle 'h' key for toggling sidebar
+        if (key === 'h') {
+            toggleSidebar();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
         if (['1', '2', '3', '4', '5'].includes(key)) {
             state.isAnswerSelected = true;
 
@@ -1601,7 +1707,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.5 with Loadouts & Course Switcher...');
+        console.log('[Auto-Advance] Initializing v7.7 with Sidebar Toggle...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();
@@ -1615,12 +1721,21 @@
 
         injectInlineControls();
 
+        // Apply saved sidebar state
+        if (config.sidebarHidden) {
+            const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
+            if (sidebar) {
+                sidebar.style.display = 'none';
+            }
+        }
+
         registerEventListener(document, 'keydown', handleKeydown, true);
         registerEventListener(document, 'keyup', handleKeyup, true);
 
         // Dashboard Scanning
         if (window.location.href.includes('/dashboard')) {
             scanAndSaveCourses();
+            decorateDashboardModules();
         }
 
         const initTimeoutId = registerTimeout(setTimeout(() => {
@@ -1656,6 +1771,10 @@
         if (window.location.href !== state.lastUrl) {
             state.lastUrl = window.location.href;
             injectInlineControls();
+        }
+        if (window.location.href.includes('/dashboard')) {
+            scanAndSaveCourses();
+            decorateDashboardModules();
         }
     });
 

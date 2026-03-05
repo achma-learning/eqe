@@ -5,25 +5,27 @@
 - **`Space`** or **`Enter`** : Check/Submit Answer
 - **`←` `→` `↑` `↓`** : Navigate Questions (Previous/Next)
 - **`0`** or **`Shift + D`** : Go to Dashboard
+- **`1` – `9`** (On Dashboard) : Direct Module Navigation (Go to Course)
 
 ## Script Features
+- **`H`** : Toggle Sidebar Visibility
 - **`I`** : View Image (Toggle modal if available)
 - **`C`** : Toggle Official/Community Answers
 - **`A`** : Open AI Explanation (Explain button)
 - **`Shift + A`** or **`7`** : Enable/Disable Auto-Advance (Pause/Play)
 - **`Shift + S`** or **`6`** : Open Settings Panel
-- **`Esc`** : Close Settings Panel or Loadout Selection Table
+- **`Esc`** : Close Settings Panel or Overlays
 
 ## Loadout / Timer Presets
-- **`T`** or **`8`** : Cycle Loadout (⭐ Goldilocks → 🏎️ Velocity → 📝 Exam)
-- **`Alt + T`** : Open Loadout Change Mode (Full Selection Table)
-- **Hold `T` (>1s)** : Open Loadout Change Mode (Full Selection Table)
+- **`T`** or **`8`** : Cycle Loadout (⭐ Default → 🏎️ Velocity → 📝 Exam)
+- **`Alt + T`** : Open Loadout Selection Table
+- **Hold `T` (>1s)** : Open Loadout Selection Table
 
 ## Course Switcher & Modules
-- **`9`** or **`Shift + M`** : Open Course Switcher (Module Loadout Table)
+- **`9`** or **`Shift + M`** : Open Course Switcher (Full Module List)
 - **`1` – `9`** (While Switcher Open) : Select Module and Redirect
 
-## Inline Button Controls
+## Inline Button Controls (Top Right)
 - **Loadout Button** (⭐/🏎️/📝):
     - **Click** : Cycle to next loadout
     - **Hold (1s)** : Open Loadout Selection Table
@@ -31,5 +33,7 @@
     - **Click** : Open Course Switcher Overlay
 - **Toggle Button** (▶️/⏸️):
     - **Click** : Enable/Disable Auto-Advance
+- **Sidebar Button** (☰):
+    - **Click** : Toggle Sidebar Visibility
 - **Gear Button** (⚙️):
     - **Click** : Open Settings Panel

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.3
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Dashboard exclusion • Improved UX (Esc to close) • New shortcuts (0,6,7,8)
+// @version      7.0
+// @description  ←→↑↓ navigation • T to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -441,14 +441,6 @@
         panel.innerHTML = tableHtml;
         overlay.appendChild(panel);
         document.body.appendChild(overlay);
-
-        const closeOnEsc = (e) => {
-            if (e.key === 'Escape') {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-            }
-        };
-        window.addEventListener('keydown', closeOnEsc);
 
         panel.querySelectorAll('.eqe-preset-row').forEach(row => {
             row.onclick = (e) => {
@@ -1161,10 +1153,6 @@
     // ============================================================================
 
     function onQuestionLoad() {
-        if (window.location.href.includes('/dashboard')) {
-            hideTimer();
-            return;
-        }
         if (state.questionLoadDebounce) {
             clearTimeout(state.questionLoadDebounce);
             cleanupRegistry.timeouts.delete(state.questionLoadDebounce);
@@ -1225,47 +1213,6 @@
         }
 
         const key = e.key.toLowerCase();
-
-        if (key === '0' || (key === 'd' && e.shiftKey)) {
-            window.location.href = 'https://www.e-qe.online/dashboard';
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (key === '6') {
-            toggleSettings();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (key === '7') {
-            const btnToggle = document.getElementById('eqe-btn-toggle');
-            if (btnToggle) {
-                toggleAutoAdvance(btnToggle);
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
-            return;
-        }
-
-        if (key === '8') {
-            cyclePreset();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (e.key === 'Escape') {
-            const settings = document.getElementById('eqe-auto-advance-settings');
-            if (settings && settings.style.display !== 'none') {
-                toggleSettings();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
-            return;
-        }
 
         if (key === 't') {
             if (e.altKey) {
@@ -1434,7 +1381,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.3 with Loadouts & New Shortcuts...');
+        console.log('[Auto-Advance] Initializing v7.0 with Loadouts...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

@@ -80,3 +80,11 @@ While currently distinct, these two components could potentially interact. For e
 *   Or, the userscript could be enhanced to send dynamic content from the `e-qe.online` page to a local Python LLM agent for processing or decision-making.
 
 This project aims to provide versatile tools for both web enhancement and advanced LLM-driven applications.
+
+---
+
+## Maintenance Mandates
+After each significant update to `userscript.txt`, you **must**:
+1.  **Update `shortcuts.txt`**: Ensure all keyboard shortcuts and UI controls are accurately reflected.
+2.  **Update `changelogs.md`**: Add a new entry following the format: `(Date and Time) - Version (X.X) - [Bullet list of changes]`.
+

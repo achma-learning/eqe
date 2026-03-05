@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.3
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Dashboard exclusion • Improved UX (Esc to close) • New shortcuts (0,6,7,8)
+// @version      6.4
+// @description  ←→↑↓ → navigation • Space/Enter → check/submit • I → view image • Inline auto-advance controls with native UI integration • Enhanced error handling & performance
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -15,20 +15,12 @@
     'use strict';
 
     // ============================================================================
-    // CONFIGURATION, LOADOUTS & STATE
+    // CONFIGURATION & STATE
     // ============================================================================
 
-    const PRESETS = [
-        { id: 'goldilocks', emoji: '⭐', name: 'Goldilocks', q: 24, a: 12, desc: 'Daily Training' },
-        { id: 'velocity', emoji: '🏎️', name: 'Velocity', q: 15, a: 5, desc: 'Finals crunch' },
-        { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h' }
-    ];
-
-    let currentPresetIndex = GM_getValue('presetIndex', 0);
-
     let config = {
-        questionTimer: GM_getValue('questionTimer', PRESETS[currentPresetIndex].q),
-        answerTimer: GM_getValue('answerTimer', PRESETS[currentPresetIndex].a),
+        questionTimer: GM_getValue('questionTimer', 10),
+        answerTimer: GM_getValue('answerTimer', 5),
         autoAdvanceEnabled: GM_getValue('autoAdvanceEnabled', false),
         islandTop: GM_getValue('islandTop', '10px'),
         islandLeft: GM_getValue('islandLeft', '50%'),
@@ -47,11 +39,7 @@
         manuallyNavigated: false,
         isProcessingNewQuestion: false,
         lastUrl: window.location.href,
-        questionLoadDebounce: null,
-        hudToastTimeout: null,
-        longPressTimeout: null,
-        tKeyPressTimer: null,
-        tKeyLongPressed: false
+        questionLoadDebounce: null
     };
 
     const cleanupRegistry = {
@@ -287,188 +275,6 @@
     }
 
     // ============================================================================
-    // PRESET LOADOUTS & HUD NOTIFICATIONS
-    // ============================================================================
-
-    function showHUDToast(preset) {
-        let toast = document.getElementById('eqe-toast-hud');
-        if (toast) toast.remove();
-
-        toast = document.createElement('div');
-        toast.id = 'eqe-toast-hud';
-        Object.assign(toast.style, {
-            position: 'fixed',
-            top: '20px',
-            left: '20px',
-            backgroundColor: 'rgba(0,0,0,0.85)',
-            color: '#fff',
-            padding: '12px 18px',
-            borderRadius: '6px',
-            fontFamily: '"Cascadia Code", "Fira Code", monospace',
-            zIndex: '1000000',
-            borderLeft: '4px solid #3b82f6',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-            fontSize: '14px',
-            lineHeight: '1.4',
-            transition: 'opacity 0.5s ease, transform 0.5s ease',
-            opacity: '0',
-            transform: 'translateX(-20px)',
-            pointerEvents: 'none'
-        });
-
-        toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span> | ${preset.q}s/${preset.a}s | ${preset.desc}`;
-        document.body.appendChild(toast);
-
-        // Trigger animation
-        requestAnimationFrame(() => {
-            toast.style.opacity = '1';
-            toast.style.transform = 'translateX(0)';
-        });
-
-        clearTimeout(state.hudToastTimeout);
-        state.hudToastTimeout = setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(-20px)';
-            setTimeout(() => toast.remove(), 500);
-        }, 3000);
-    }
-
-    function applyPreset(index) {
-        currentPresetIndex = index;
-        const p = PRESETS[currentPresetIndex];
-
-        config.questionTimer = p.q;
-        config.answerTimer = p.a;
-
-        GM_setValue('presetIndex', currentPresetIndex);
-        GM_setValue('questionTimer', p.q);
-        GM_setValue('answerTimer', p.a);
-
-        showHUDToast(p);
-
-        // Update UI button icon
-        const btn = document.getElementById('eqe-btn-loadout');
-        if (btn) btn.innerHTML = p.emoji;
-
-        // Update settings inputs if open
-        const qInput = document.getElementById('eqe-question-timer');
-        const aInput = document.getElementById('eqe-answer-timer');
-        if (qInput) qInput.value = p.q;
-        if (aInput) aInput.value = p.a;
-
-        if (config.autoAdvanceEnabled) {
-            startTimer();
-        }
-    }
-
-    function cyclePreset() {
-        const nextIndex = (currentPresetIndex + 1) % PRESETS.length;
-        applyPreset(nextIndex);
-    }
-
-    function showPresetTable() {
-        const existing = document.getElementById('eqe-preset-overlay');
-        if (existing) {
-            existing.remove();
-            return;
-        }
-
-        const isDark = isDarkMode();
-        const bg = isDark ? '#1f2937' : '#ffffff';
-        const text = isDark ? '#f3f4f6' : '#1f2937';
-        const border = isDark ? '#374151' : '#e5e7eb';
-
-        const overlay = document.createElement('div');
-        overlay.id = 'eqe-preset-overlay';
-        Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
-            backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: '2000000',
-            backdropFilter: 'blur(4px)'
-        });
-
-        const panel = document.createElement('div');
-        Object.assign(panel.style, {
-            backgroundColor: bg,
-            color: text,
-            padding: '24px',
-            borderRadius: '16px',
-            border: '2px solid #3b82f6',
-            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            maxWidth: '500px',
-            width: '90%'
-        });
-
-        let tableHtml = `
-            <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Select Timer Loadout</h3>
-            <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; font-family: monospace;">
-                    <thead>
-                        <tr style="border-bottom: 2px solid ${border}; text-align: left;">
-                            <th style="padding: 12px 8px;">Mode</th>
-                            <th style="padding: 12px 8px;">Q/A</th>
-                            <th style="padding: 12px 8px;">Goal</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-
-        PRESETS.forEach((p, i) => {
-            const isSelected = i === currentPresetIndex;
-            tableHtml += `
-                <tr class="eqe-preset-row" data-index="${i}" style="cursor: pointer; border-bottom: 1px solid ${border}; ${isSelected ? 'background: rgba(59, 130, 246, 0.1);' : ''}">
-                    <td style="padding: 12px 8px; font-weight: bold;">${p.emoji} ${p.name}</td>
-                    <td style="padding: 12px 8px;">${p.q}s / ${p.a}s</td>
-                    <td style="padding: 12px 8px; font-size: 12px;">${p.desc}</td>
-                </tr>
-            `;
-        });
-
-        tableHtml += `
-                    </tbody>
-                </table>
-            </div>
-            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Click a row to select • Click background to close</p>
-        `;
-
-        panel.innerHTML = tableHtml;
-        overlay.appendChild(panel);
-        document.body.appendChild(overlay);
-
-        const closeOnEsc = (e) => {
-            if (e.key === 'Escape') {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-            }
-        };
-        window.addEventListener('keydown', closeOnEsc);
-
-        panel.querySelectorAll('.eqe-preset-row').forEach(row => {
-            row.onclick = (e) => {
-                const index = parseInt(row.dataset.index);
-                applyPreset(index);
-                overlay.remove();
-            };
-            row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
-            row.onmouseout = () => {
-                const index = parseInt(row.dataset.index);
-                row.style.backgroundColor = index === currentPresetIndex ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
-            };
-        });
-
-        overlay.onclick = (e) => {
-            if (e.target === overlay) overlay.remove();
-        };
-    }
-
-    // ============================================================================
     // INLINE CONTROLS UI
     // ============================================================================
 
@@ -520,27 +326,7 @@
 
             const buttonStyleClass = getModuleStyle();
 
-            const btnLoadout = document.createElement('button');
-            btnLoadout.id = 'eqe-btn-loadout';
-            btnLoadout.className = buttonStyleClass;
-            btnLoadout.style.cursor = 'pointer';
-            btnLoadout.style.fontSize = '18px';
-            btnLoadout.innerHTML = PRESETS[currentPresetIndex].emoji;
-            btnLoadout.title = "Cycle Loadout (T) | Hold for Table";
-
-            btnLoadout.onmousedown = () => {
-                state.longPressTimeout = setTimeout(showPresetTable, 800);
-            };
-            btnLoadout.onmouseup = () => {
-                clearTimeout(state.longPressTimeout);
-            };
-            btnLoadout.onclick = () => {
-                if (document.getElementById('eqe-preset-overlay')) return;
-                cyclePreset();
-            };
-
             const btnToggle = document.createElement('button');
-            btnToggle.id = 'eqe-btn-toggle';
             btnToggle.className = buttonStyleClass;
             btnToggle.style.cursor = 'pointer';
 
@@ -561,7 +347,6 @@
             btnGear.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
             btnGear.onclick = () => toggleSettings();
 
-            container.appendChild(btnLoadout);
             container.appendChild(btnToggle);
             container.appendChild(btnGear);
 
@@ -916,7 +701,7 @@
         showToast('✓ Settings saved successfully!', 'success');
         toggleSettings();
 
-        const btnToggle = document.getElementById('eqe-btn-toggle');
+        const btnToggle = document.querySelector('#eqe-inline-container button:first-child');
         if (btnToggle) {
             if (autoAdvanceEnabled) {
                 btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
@@ -1161,10 +946,6 @@
     // ============================================================================
 
     function onQuestionLoad() {
-        if (window.location.href.includes('/dashboard')) {
-            hideTimer();
-            return;
-        }
         if (state.questionLoadDebounce) {
             clearTimeout(state.questionLoadDebounce);
             cleanupRegistry.timeouts.delete(state.questionLoadDebounce);
@@ -1226,64 +1007,6 @@
 
         const key = e.key.toLowerCase();
 
-        if (key === '0' || (key === 'd' && e.shiftKey)) {
-            window.location.href = 'https://www.e-qe.online/dashboard';
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (key === '6') {
-            toggleSettings();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (key === '7') {
-            const btnToggle = document.getElementById('eqe-btn-toggle');
-            if (btnToggle) {
-                toggleAutoAdvance(btnToggle);
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
-            return;
-        }
-
-        if (key === '8') {
-            cyclePreset();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (e.key === 'Escape') {
-            const settings = document.getElementById('eqe-auto-advance-settings');
-            if (settings && settings.style.display !== 'none') {
-                toggleSettings();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
-            return;
-        }
-
-        if (key === 't') {
-            if (e.altKey) {
-                showPresetTable();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                return;
-            }
-
-            if (!state.tKeyPressTimer) {
-                state.tKeyPressTimer = registerTimeout(setTimeout(() => {
-                    showPresetTable();
-                    state.tKeyLongPressed = true;
-                }, 1000));
-            }
-            return;
-        }
-
         if (key === 's' && e.shiftKey) {
             toggleSettings();
             e.preventDefault();
@@ -1302,7 +1025,7 @@
         }
 
         if (key === 'a' && e.shiftKey) {
-            const btnToggle = document.getElementById('eqe-btn-toggle');
+            const btnToggle = document.querySelector('#eqe-inline-container button:first-child');
             if (btnToggle) {
                 toggleAutoAdvance(btnToggle);
                 e.preventDefault();
@@ -1415,26 +1138,12 @@
         }
     }
 
-    function handleKeyup(e) {
-        if (e.key.toLowerCase() === 't') {
-            if (state.tKeyPressTimer) {
-                clearTimeout(state.tKeyPressTimer);
-                cleanupRegistry.timeouts.delete(state.tKeyPressTimer);
-                state.tKeyPressTimer = null;
-            }
-            if (!state.tKeyLongPressed && !e.altKey) {
-                cyclePreset();
-            }
-            state.tKeyLongPressed = false;
-        }
-    }
-
     // ============================================================================
     // INITIALIZATION
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.3 with Loadouts & New Shortcuts...');
+        console.log('[Auto-Advance] Initializing v6.4 with View Image shortcut...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();
@@ -1449,7 +1158,6 @@
         injectInlineControls();
 
         registerEventListener(document, 'keydown', handleKeydown, true);
-        registerEventListener(document, 'keyup', handleKeyup, true);
 
         const initTimeoutId = registerTimeout(setTimeout(() => {
             state.lastQuestionText = getQuestionText();

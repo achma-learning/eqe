@@ -1,0 +1,371 @@
+// ==UserScript==
+// @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [LOADOUTS]
+// @namespace    https://e-qe.online/
+// @version      7.0
+// @description  ←→↑↓ Navigation • T to cycle Loadouts • Top-left Chat Toast • Space/Enter to check • I for image • Native UI integration
+// @match        https://e-qe.online/*
+// @match        https://www.e-qe.online/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @license      MIT
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    // ============================================================================
+    // CONFIGURATION, LOADOUTS & STATE
+    // ============================================================================
+
+    const PRESETS = [
+        { id: 'goldilocks', emoji: '⭐', name: 'Goldilocks', q: 24, a: 12, desc: 'Daily Training', toast: 'Default ✓' },
+        { id: 'velocity', emoji: '🏎️', name: 'Velocity', q: 15, a: 5, desc: 'Finals crunch', toast: 'Finals 🚀' },
+        { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h', toast: 'Exam Mode' }
+    ];
+
+    let currentPresetIndex = GM_getValue('presetIndex', 0);
+
+    let config = {
+        questionTimer: PRESETS[currentPresetIndex].q,
+        answerTimer: PRESETS[currentPresetIndex].a,
+        autoAdvanceEnabled: GM_getValue('autoAdvanceEnabled', false),
+        islandTop: GM_getValue('islandTop', '10px'),
+        islandLeft: GM_getValue('islandLeft', '50%'),
+        autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true)
+    };
+
+    let state = {
+        currentPhase: null,
+        timerHandle: null,
+        countdownInterval: null,
+        isAnswerSelected: false,
+        lastQuestionText: null,
+        timeRemaining: 0,
+        toastTimeout: null,
+        isProcessingNewQuestion: false,
+        longPressTimeout: null
+    };
+
+    const cleanupRegistry = {
+        intervals: new Set(),
+        timeouts: new Set(),
+        observers: new Set(),
+        eventListeners: []
+    };
+
+    // ============================================================================
+    // DOM SELECTORS
+    // ============================================================================
+
+    const getNextBtn = () => {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.querySelector('svg.lucide-chevron-right')) return btn;
+            const text = btn.textContent?.trim().toLowerCase();
+            if (text && (text.includes('next') || text.includes('suivant'))) return btn;
+        }
+        return document.querySelector('button[aria-label*="next" i]');
+    };
+
+    const getCheckBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+        const answerBtn = buttons.find(b => {
+            const hasAnswerText = b.textContent?.trim().toLowerCase() === 'answer';
+            const hasCheckIcon = b.querySelector('svg.lucide-circle-check-big');
+            return hasAnswerText && hasCheckIcon && !b.disabled;
+        });
+        if (answerBtn) return answerBtn;
+        return buttons.find(b => /check\s*answer|submit|verify|show\s*answer|^answer$/i.test(b.textContent?.trim()) && !b.disabled);
+    };
+
+    const getAnswerButtons = () => {
+        return Array.from(document.querySelectorAll('div.select-none.border.p-3.shadow-md.cursor-pointer')).filter(container => {
+            const firstChild = container.firstElementChild;
+            return firstChild && ['A', 'B', 'C', 'D', 'E'].includes(firstChild.textContent.trim());
+        });
+    };
+
+    // ============================================================================
+    // CORE LOGIC: PRESETS & TOASTS
+    // ============================================================================
+
+    function showLoadoutToast(preset) {
+        let toast = document.getElementById('eqe-toast-chat');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'eqe-toast-chat';
+            Object.assign(toast.style, {
+                position: 'fixed', top: '20px', left: '20px',
+                backgroundColor: 'rgba(0,0,0,0.85)', color: '#fff',
+                padding: '12px 18px', borderRadius: '6px',
+                fontFamily: '"Cascadia Code", "Fira Code", monospace', zIndex: '1000000',
+                borderLeft: '4px solid #3b82f6', transition: 'all 0.3s ease',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)', pointerEvents: 'none',
+                fontSize: '14px', lineHeight: '1.4'
+            });
+            document.body.appendChild(toast);
+        }
+
+        toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span> | ${preset.q}s/${preset.a}s | ${preset.desc} <span style="color: #60a5fa; margin-left:10px;">${preset.toast}</span>`;
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(0)';
+
+        clearTimeout(state.toastTimeout);
+        state.toastTimeout = setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(-20px)';
+        }, 3000);
+    }
+
+    function cyclePreset() {
+        currentPresetIndex = (currentPresetIndex + 1) % PRESETS.length;
+        const p = PRESETS[currentPresetIndex];
+
+        config.questionTimer = p.q;
+        config.answerTimer = p.a;
+
+        GM_setValue('presetIndex', currentPresetIndex);
+        showLoadoutToast(p);
+
+        // Update UI button if it exists
+        const btn = document.getElementById('eqe-btn-loadout');
+        if (btn) btn.innerHTML = p.emoji;
+
+        // Restart timer with new values if active
+        if (config.autoAdvanceEnabled) onQuestionLoad();
+    }
+
+    function showPresetTable() {
+        const isDark = document.documentElement.classList.contains('dark');
+        const bg = isDark ? '#1f2937' : '#ffffff';
+        const text = isDark ? '#f3f4f6' : '#1f2937';
+
+        let overlay = document.getElementById('eqe-preset-overlay');
+        if (overlay) return overlay.remove();
+
+        overlay = document.createElement('div');
+        overlay.id = 'eqe-preset-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            backgroundColor: bg, color: text, padding: '20px', borderRadius: '12px',
+            zIndex: '2000000', border: '2px solid #3b82f6', boxShadow: '0 0 50px rgba(0,0,0,0.5)'
+        });
+
+        let tableHtml = `<h3 style="margin-top:0">Select Timer Loadout</h3><table style="width:100%; border-collapse:collapse;">
+            <tr style="border-bottom: 1px solid #ccc; text-align:left;">
+                <th style="padding:8px">Mode</th><th style="padding:8px">Q/A</th><th style="padding:8px">Goal</th>
+            </tr>`;
+
+        PRESETS.forEach((p, i) => {
+            tableHtml += `<tr style="cursor:pointer; ${i === currentPresetIndex ? 'background:#3b82f633' : ''}" onclick="window.dispatchEvent(new CustomEvent('eqe-set-preset', {detail:${i}}))">
+                <td style="padding:8px">${p.emoji} ${p.name}</td>
+                <td style="padding:8px">${p.q}s/${p.a}s</td>
+                <td style="padding:8px">${p.desc}</td>
+            </tr>`;
+        });
+        tableHtml += `</table><p style="font-size:11px; margin-top:10px; opacity:0.7;">Click a row to select • Click outside to close</p>`;
+
+        overlay.innerHTML = tableHtml;
+        document.body.appendChild(overlay);
+
+        const closeOverlay = (e) => {
+            if (!overlay.contains(e.target)) {
+                overlay.remove();
+                document.removeEventListener('mousedown', closeOverlay);
+            }
+        };
+        setTimeout(() => document.addEventListener('mousedown', closeOverlay), 10);
+    }
+
+    window.addEventListener('eqe-set-preset', (e) => {
+        currentPresetIndex = e.detail - 1; // Adjust for upcoming cycle call
+        cyclePreset();
+        const overlay = document.getElementById('eqe-preset-overlay');
+        if (overlay) overlay.remove();
+    });
+
+    // ============================================================================
+    // TIMER ENGINE
+    // ============================================================================
+
+    function clearTimer() {
+        if (state.timerHandle) {
+            clearTimeout(state.timerHandle);
+            cleanupRegistry.timeouts.delete(state.timerHandle);
+            state.timerHandle = null;
+        }
+    }
+
+    function stopCountdown() {
+        if (state.countdownInterval) {
+            clearInterval(state.countdownInterval);
+            cleanupRegistry.intervals.delete(state.countdownInterval);
+            state.countdownInterval = null;
+        }
+    }
+
+    function updateDynamicIsland() {
+        const island = document.getElementById('eqe-dynamic-island');
+        if (!island) return;
+
+        if (!config.autoAdvanceEnabled || !state.currentPhase) {
+            island.style.display = 'none';
+            return;
+        }
+        island.style.display = 'flex';
+        island.style.background = state.currentPhase === 'question' ? 'linear-gradient(135deg, #6366f1, #a855f7)' : 'linear-gradient(135deg, #10b981, #059669)';
+        if (state.timeRemaining <= 3) island.style.background = 'linear-gradient(135deg, #ef4444, #b91c1c)';
+
+        island.innerHTML = `<span>${state.currentPhase === 'question' ? '❓' : '✅'} ${state.timeRemaining}s</span>`;
+    }
+
+    function startTimer() {
+        clearTimer();
+        stopCountdown();
+
+        if (!config.autoAdvanceEnabled) return;
+
+        const duration = state.currentPhase === 'question' ? config.questionTimer : config.answerTimer;
+        state.timeRemaining = duration;
+        updateDynamicIsland();
+
+        state.countdownInterval = setInterval(() => {
+            state.timeRemaining--;
+            updateDynamicIsland();
+            if (state.timeRemaining <= 0) {
+                stopCountdown();
+                handleTimeout();
+            }
+        }, 1000);
+        cleanupRegistry.intervals.add(state.countdownInterval);
+    }
+
+    function handleTimeout() {
+        if (state.currentPhase === 'question') {
+            if (config.autoSelectOnTimeout) {
+                const btns = getAnswerButtons();
+                if (btns.length > 0) btns[Math.floor(Math.random() * btns.length)].click();
+            }
+            const checkBtn = getCheckBtn();
+            if (checkBtn) checkBtn.click();
+            state.currentPhase = 'answer';
+            startTimer();
+        } else {
+            const nextBtn = getNextBtn();
+            if (nextBtn) nextBtn.click();
+        }
+    }
+
+    function onQuestionLoad() {
+        state.currentPhase = 'question';
+        startTimer();
+    }
+
+    // ============================================================================
+    // UI INJECTION
+    // ============================================================================
+
+    function injectControls() {
+        if (document.getElementById('eqe-inline-container')) return;
+        const exitBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes("Exit"));
+        if (!exitBtn) return;
+
+        const container = document.createElement('div');
+        container.id = 'eqe-inline-container';
+        container.style.cssText = 'display:flex; align-items:center; gap:8px; margin-right:12px;';
+
+        const buttonBase = "h-9 w-9 flex items-center justify-center text-white rounded-md shadow-sm transition-all hover:scale-105 active:scale-95 bg-gradient-to-r from-blue-600 to-indigo-600";
+
+        // Loadout Button
+        const btnLoadout = document.createElement('button');
+        btnLoadout.id = 'eqe-btn-loadout';
+        btnLoadout.className = buttonBase;
+        btnLoadout.innerHTML = PRESETS[currentPresetIndex].emoji;
+        btnLoadout.title = "Cycle Loadout (T) | Hold for Table";
+
+        btnLoadout.onmousedown = () => {
+            state.longPressTimeout = setTimeout(showPresetTable, 800);
+        };
+        btnLoadout.onmouseup = () => {
+            clearTimeout(state.longPressTimeout);
+        };
+        btnLoadout.onclick = () => {
+            if (document.getElementById('eqe-preset-overlay')) return;
+            cyclePreset();
+        };
+
+        // Auto-Advance Toggle
+        const btnToggle = document.createElement('button');
+        btnToggle.className = buttonBase;
+        btnToggle.innerHTML = config.autoAdvanceEnabled ? '⏸️' : '▶️';
+        btnToggle.onclick = () => {
+            config.autoAdvanceEnabled = !config.autoAdvanceEnabled;
+            GM_setValue('autoAdvanceEnabled', config.autoAdvanceEnabled);
+            btnToggle.innerHTML = config.autoAdvanceEnabled ? '⏸️' : '▶️';
+            if (config.autoAdvanceEnabled) onQuestionLoad(); else { stopCountdown(); state.currentPhase = null; updateDynamicIsland(); }
+        };
+
+        container.appendChild(btnLoadout);
+        container.appendChild(btnToggle);
+        exitBtn.parentNode.insertBefore(container, exitBtn);
+
+        // Dynamic Island Init
+        if (!document.getElementById('eqe-dynamic-island')) {
+            const island = document.createElement('div');
+            island.id = 'eqe-dynamic-island';
+            Object.assign(island.style, {
+                position: 'fixed', top: '10px', left: '50%', transform: 'translateX(-50%)',
+                padding: '8px 20px', borderRadius: '20px', color: 'white', fontWeight: 'bold',
+                zIndex: '999999', display: 'none', alignItems: 'center', boxShadow: '0 4px 15px rgba(0,0,0,0.3)'
+            });
+            document.body.appendChild(island);
+        }
+    }
+
+    // ============================================================================
+    // KEYBOARD HANDLER
+    // ============================================================================
+
+    window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+        // T Logic
+        if (e.key.toLowerCase() === 't') {
+            if (e.altKey) {
+                showPresetTable();
+            } else {
+                cyclePreset();
+            }
+        }
+
+        // Navigation & Shortcuts
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') getNextBtn()?.click();
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') getPrevBtn()?.click();
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); getCheckBtn()?.click(); }
+        if (e.key.toLowerCase() === 'i') getViewImageBtn()?.click();
+        if (e.key.toLowerCase() === 'a' && e.shiftKey) { config.autoAdvanceEnabled = !config.autoAdvanceEnabled; GM_setValue('autoAdvanceEnabled', config.autoAdvanceEnabled); }
+
+        // Answer Keys 1-5 or A-E
+        const answers = getAnswerButtons();
+        const index = "12345".indexOf(e.key);
+        const alphaIndex = "abcde".indexOf(e.key.toLowerCase());
+        const finalIdx = index !== -1 ? index : alphaIndex;
+        if (finalIdx !== -1 && answers[finalIdx]) answers[finalIdx].click();
+    });
+
+    // ============================================================================
+    // OBSERVER
+    // ============================================================================
+
+    const observer = new MutationObserver(() => {
+        injectControls();
+        const qText = document.querySelector('h1')?.textContent;
+        if (qText && qText !== state.lastQuestionText) {
+            state.lastQuestionText = qText;
+            onQuestionLoad();
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+})();

@@ -1,0 +1,29 @@
+# EQE Auto-Advance Shortcuts & Controls
+
+## General Navigation
+- **`1` – `5`** or **`A` – `E`** : Select Answer
+- **`Space`** or **`Enter`** : Check/Submit Answer
+- **`←` `→` `↑` `↓`** : Navigate Questions (Previous/Next)
+- **`0`** or **`Shift + D`** : Go to Dashboard
+
+## Script Features
+- **`I`** : View Image (Toggle modal if available)
+- **`C`** : Toggle Official/Community Answers
+- **`A`** : Open AI Explanation (Explain button)
+- **`Shift + A`** or **`7`** : Enable/Disable Auto-Advance (Pause/Play)
+- **`Shift + S`** or **`6`** : Open Settings Panel
+- **`Esc`** : Close Settings Panel or Loadout Selection Table
+
+## Loadout / Timer Presets
+- **`T`** or **`8`** : Cycle Loadout (⭐ Goldilocks → 🏎️ Velocity → 📝 Exam)
+- **`Alt + T`** : Open Loadout Change Mode (Full Selection Table)
+- **Hold `T` (>1s)** : Open Loadout Change Mode (Full Selection Table)
+
+## Inline Button Controls
+- **Loadout Button** (⭐/🏎️/📝):
+    - **Click** : Cycle to next loadout
+    - **Hold (1s)** : Open Loadout Selection Table
+- **Toggle Button** (▶️/⏸️):
+    - **Click** : Enable/Disable Auto-Advance
+- **Gear Button** (⚙️):
+    - **Click** : Open Settings Panel

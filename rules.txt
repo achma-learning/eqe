@@ -1,0 +1,30 @@
+These are the requirements for scripts posted to Greasy Fork. These are intended to keep Greasy Fork a safe and useful place for user scripts. Any script falling outside these requirements may be deleted by Greasy Fork moderators.
+
+Functionality
+Scripts must include a description of what they do and may not do things unreasonably outside of this description. Users must know what a script will do before installing it.
+Scripts must have a reason to be a script. For example, a script that just directs a user to a website doesn't need to be a script; it could be a link. Scripts that use a web service to perform an action on the current page (e.g. to convert it in some way) are allowed.
+Scripts that contain features for the benefit of the author rather than the user (such as tracking, ads, and miners) are allowed, but these must be disclosed with @antifeature meta keys. Scripts must not add @includes or @matches for the sole purpose adding antifeatures.
+The primary functionality of a script must be within the code on Greasy Fork. A script posted on Greasy Fork that simply loads the bulk of the script from somewhere else is not allowed. Posting of alternate download URLs, with the intent of having users use the alternate sources instead of the version posted to Greasy Fork, is not allowed.
+Code
+Code posted to Greasy Fork must not be obfuscated or minified. Users must be given the opportunity to inspect and understand a script before installing it. If the script is bundled by a tool such as webpack, it must be output in non-minified form, with whitespace and variable names retained.
+Scripts are limited to a size of 2 MB. Scripts may not be minified to fit under this limit. If your script is nearing this limit, you may want to consider:
+Moving non-code data such as data URIs or JSON outside of the script.
+Loading libraries using @require or with webpack's externals option.
+Libraries that a script uses should be @require-d, unless there's a valid technical reason not to do so. In the case that a library is included inline, it must include information as to the source of the library (e.g. a comment indicating URL and/or name and version).
+Use of external JavaScript is limited.
+Scripts must not check for updates at a rate higher than once per day. Note that most user script managers will handle automatic updates, so doing it in the script is unnecessary. Scripts should also not dynamically inject another Greasy Fork-hosted script into a page, as this bypasses caching in user script managers.
+Listing
+Script authors may not place advertising on pages on Greasy Fork, for example in a script's description. Promotion of the script author's homepage, code repository, Discord, WeChat, etc. is allowed.
+Scripts must not include unrelated keywords or mention unrelated sites to attempt to improve search placement.
+Script authors may not update scripts excessively with the sole purpose of ranking higher on the script list.
+Scripts may not include @includes or @matches for sites they do not provide functionality on.
+Scripts' names, descriptions, and other content must be marked with the proper language.
+Copyright
+Your script must respect others' copyrights. This includes the code itself and any resources (for example images) it uses. If you intend on using someone else's content, abide by their licensing terms or get their permission before doing so. Licenses on scripts are specified by the @license meta key, and you can learn about what you can and cannot do by using tldrlegal.com.
+Even in cases not violating the copyright rule, reposts of scripts that are already on Greasy Fork are not allowed unless they are improving upon the original.
+Miscellaneous
+Scripts that include adult content or are for sites with adult content must be marked as such to allow other users the option of whether to see them.
+Do not repost scripts that were deleted due to rule violations; use the appeal function instead. Reposting deleted scripts may result in a ban.
+If you notice a script that falls outside of these parameters, please report it by going to the Feedback link for that script and choosing the "Report script" option.
+
+source : https://greasyfork.org/en/help/code-rules

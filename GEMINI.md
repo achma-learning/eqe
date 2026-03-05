@@ -82,7 +82,8 @@ This project aims to provide versatile tools for both web enhancement and advanc
 
 ## Maintenance Mandates
 After each significant update to `userscript.txt`, you **must**:
-1.  **Update `shortcuts.txt`**: Ensure all keyboard shortcuts and UI controls are accurately reflected.
-2.  **Update `changelogs.md`**: Add a new entry following the format: `(Date and Time) - Version (X.X) - [Bullet list of changes]`.
-3.  **Sync `showShortcutsHelp`**: If `shortcuts.txt` is updated, you **must** update the `showShortcutsHelp()` function in `userscript.txt` to reflect the changes in the "⌨️" help overlay.
+1.  **Verify Compliance**: Ensure the script strictly adheres to the Greasy Fork rules outlined in `rules.txt`.
+2.  **Update `shortcuts.txt`**: Ensure all keyboard shortcuts and UI controls are accurately reflected.
+3.  **Update `changelogs.md`**: Add a new entry following the format: `(Date and Time) - Version (X.X) - [Bullet list of changes]`.
+4.  **Sync `showShortcutsHelp`**: If `shortcuts.txt` is updated, you **must** update the `showShortcutsHelp()` function in `userscript.txt` to reflect the changes in the "⌨️" help overlay.
 

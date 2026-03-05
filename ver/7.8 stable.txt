@@ -1,0 +1,1794 @@
+// ==UserScript==
+// @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
+// @namespace    https://e-qe.online/
+// @version      7.8
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
+// @match        https://e-qe.online/*
+// @match        https://www.e-qe.online/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @license      MIT
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    // ============================================================================
+    // CONFIGURATION, LOADOUTS & STATE
+    // ============================================================================
+
+    const PRESETS = [
+        { id: 'goldilocks', emoji: '⭐', name: 'Default', q: 24, a: 12, desc: 'Daily Training' },
+        { id: 'velocity', emoji: '🏎️', name: 'Velocity', q: 15, a: 5, desc: 'Finals crunch' },
+        { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h' }
+    ];
+
+    let currentPresetIndex = GM_getValue('presetIndex', 0);
+
+    let config = {
+        questionTimer: GM_getValue('questionTimer', PRESETS[currentPresetIndex].q),
+        answerTimer: GM_getValue('answerTimer', PRESETS[currentPresetIndex].a),
+        autoAdvanceEnabled: GM_getValue('autoAdvanceEnabled', false),
+        islandTop: GM_getValue('islandTop', '10px'),
+        islandLeft: GM_getValue('islandLeft', '50%'),
+        autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
+        sidebarHidden: GM_getValue('sidebarHidden', false)
+    };
+
+    let state = {
+        currentPhase: null,
+        timerHandle: null,
+        countdownInterval: null,
+        isAnswerSelected: false,
+        lastQuestionText: null,
+        timeRemaining: 0,
+        spacePressed: false,
+        answerSelectedAfterSpace: false,
+        manuallyNavigated: false,
+        isProcessingNewQuestion: false,
+        lastUrl: window.location.href,
+        questionLoadDebounce: null,
+        hudToastTimeout: null,
+        longPressTimeout: null,
+        tKeyPressTimer: null,
+        tKeyLongPressed: false
+    };
+
+    const cleanupRegistry = {
+        intervals: new Set(),
+        timeouts: new Set(),
+        observers: new Set(),
+        eventListeners: []
+    };
+
+    // ============================================================================
+    // DOM SELECTORS (UPDATED FOR NEW BUTTON STRUCTURE)
+    // ============================================================================
+
+    const getNextBtn = () => {
+        // Strategy 1: Look for chevron-right SVG (most reliable for new UI)
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            const svg = btn.querySelector('svg.lucide-chevron-right');
+            if (svg) return btn;
+        }
+
+        // Strategy 2: Look for text content (multi-language support)
+        for (const btn of buttons) {
+            const text = btn.textContent?.trim().toLowerCase();
+            if (text && (text.includes('next') || text.includes('suivant'))) {
+                return btn;
+            }
+        }
+
+        // Strategy 3: Old method (fallback for backward compatibility)
+        return document.querySelector('button[aria-label*="next" i], button[aria-label="Next question" i]');
+    };
+
+    const getPrevBtn = () => {
+        // Strategy 1: Look for chevron-left SVG (most reliable for new UI)
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            const svg = btn.querySelector('svg.lucide-chevron-left');
+            if (svg) return btn;
+        }
+
+        // Strategy 2: Look for text content (multi-language support)
+        for (const btn of buttons) {
+            const text = btn.textContent?.trim().toLowerCase();
+            if (text && (text.includes('previous') || text.includes('précédent') || text.includes('prev'))) {
+                return btn;
+            }
+        }
+
+        // Strategy 3: Old method (fallback for backward compatibility)
+        return document.querySelector('button[aria-label*="previous" i], button[aria-label="Previous question" i]');
+    };
+
+    const getCheckBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+
+        // Strategy 1: Look for the new "Answer" button with circle-check-big icon
+        const answerBtn = buttons.find(b => {
+            const hasAnswerText = b.textContent?.trim().toLowerCase() === 'answer';
+            const hasCheckIcon = b.querySelector('svg.lucide-circle-check-big');
+            return hasAnswerText && hasCheckIcon && !b.disabled;
+        });
+        if (answerBtn) return answerBtn;
+
+        // Strategy 2: Old method (fallback)
+        return buttons.find(b => {
+            const text = b.textContent?.trim();
+            return /check\s*answer|submit|verify|show\s*answer|^answer$/i.test(text) && !b.disabled;
+        });
+    };
+
+    const getCGroupBtn = () => [...document.querySelectorAll('button')]
+        .find(b => {
+            const text = b.textContent?.trim();
+            return text === 'Official' || text === 'Community';
+        });
+
+    const getExplainBtn = () => [...document.querySelectorAll('button')]
+        .find(b => b.textContent?.trim() === 'Explain');
+
+    const getViewImageBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+
+        // Strategy 1: Look for button with lucide-image SVG icon
+        const imageBtn = buttons.find(b => {
+            const hasImageIcon = b.querySelector('svg.lucide-image');
+            return hasImageIcon;
+        });
+        if (imageBtn) return imageBtn;
+
+        // Strategy 2: Look for button with "View Image" text (screen reader text)
+        return buttons.find(b => {
+            const srText = b.querySelector('.sr-only')?.textContent?.trim().toLowerCase();
+            const ariaLabel = b.getAttribute('aria-label')?.toLowerCase();
+            return srText?.includes('view image') || srText?.includes('image') ||
+                   ariaLabel?.includes('view image') || ariaLabel?.includes('image');
+        });
+    };
+
+    const getAnswerButtons = () => {
+        const potentialAnswerContainers = document.querySelectorAll('div.select-none.border.p-3.shadow-md.cursor-pointer');
+
+        return Array.from(potentialAnswerContainers).filter(container => {
+            const firstChild = container.firstElementChild;
+            if (firstChild && firstChild.textContent) {
+                const text = firstChild.textContent.trim();
+                return ['A', 'B', 'C', 'D', 'E'].includes(text);
+            }
+            return false;
+        });
+    };
+
+    const getQuestionText = () => {
+        const questionElement = document.querySelector('h1, h2, [class*="question"]');
+        return questionElement ? questionElement.textContent.trim() : null;
+    };
+
+    // ============================================================================
+    // CLEANUP & MEMORY MANAGEMENT
+    // ============================================================================
+
+    function registerInterval(intervalId) {
+        cleanupRegistry.intervals.add(intervalId);
+        return intervalId;
+    }
+
+    function registerTimeout(timeoutId) {
+        cleanupRegistry.timeouts.add(timeoutId);
+        return timeoutId;
+    }
+
+    function registerObserver(observer) {
+        cleanupRegistry.observers.add(observer);
+        return observer;
+    }
+
+    function registerEventListener(element, event, handler, options) {
+        cleanupRegistry.eventListeners.push({ element, event, handler, options });
+        element.addEventListener(event, handler, options);
+    }
+
+    function cleanup() {
+        console.log('[Auto-Advance] Cleaning up resources...');
+
+        cleanupRegistry.intervals.forEach(id => clearInterval(id));
+        cleanupRegistry.intervals.clear();
+
+        cleanupRegistry.timeouts.forEach(id => clearTimeout(id));
+        cleanupRegistry.timeouts.clear();
+
+        cleanupRegistry.observers.forEach(obs => obs.disconnect());
+        cleanupRegistry.observers.clear();
+
+        cleanupRegistry.eventListeners.forEach(({ element, event, handler, options }) => {
+            element?.removeEventListener(event, handler, options);
+        });
+        cleanupRegistry.eventListeners = [];
+
+        clearTimer();
+        stopCountdown();
+
+        if (state.questionLoadDebounce) {
+            clearTimeout(state.questionLoadDebounce);
+            state.questionLoadDebounce = null;
+        }
+
+        console.log('[Auto-Advance] Cleanup complete');
+    }
+
+    // ============================================================================
+    // UTILITY FUNCTIONS
+    // ============================================================================
+
+    const isDarkMode = () => {
+        if (document.documentElement.classList.contains('dark')) {
+            return true;
+        }
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    };
+
+    function getModuleStyle() {
+        const communityBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes("Community"));
+        const headerIcon = document.querySelector('div.rounded-md.bg-gradient-to-r');
+        let baseClasses = "h-9 w-9 flex items-center justify-center text-white rounded-md shadow-xs transition-all hover:opacity-90 hover:scale-105 active:scale-95";
+
+        if (communityBtn) {
+            const gradientClasses = Array.from(communityBtn.classList)
+                .filter(c => c.startsWith('bg-') || c.startsWith('from-') || c.startsWith('to-'))
+                .join(' ');
+            return `${gradientClasses} ${baseClasses}`;
+        } else if (headerIcon) {
+            const gradientClasses = Array.from(headerIcon.classList)
+                .filter(c => c.startsWith('bg-') || c.startsWith('from-') || c.startsWith('to-'))
+                .join(' ');
+            return `${gradientClasses} ${baseClasses}`;
+        }
+
+        return "bg-gradient-to-r from-[#D10074] to-[#6E2C6B] " + baseClasses;
+    }
+
+    function getDynamicGradient() {
+        const tempDiv = document.createElement('div');
+        tempDiv.style.cssText = 'visibility: hidden; position: absolute;';
+        tempDiv.className = getModuleStyle();
+        document.body.appendChild(tempDiv);
+
+        const computedStyle = window.getComputedStyle(tempDiv);
+        const gradient = computedStyle.backgroundImage || computedStyle.backgroundColor || 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+
+        tempDiv.remove();
+        return gradient;
+    }
+
+    function playNotificationSound() {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
+            oscillator.start(audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+            oscillator.stop(audioContext.currentTime + 0.5);
+        } catch (e) {
+            console.warn('[Auto-Advance] Could not play notification sound:', e);
+        }
+    }
+
+    // ============================================================================
+    // PRESET LOADOUTS & HUD NOTIFICATIONS
+    // ============================================================================
+
+    function showHUDToast(preset) {
+        let toast = document.getElementById('eqe-toast-hud');
+        if (toast) toast.remove();
+
+        toast = document.createElement('div');
+        toast.id = 'eqe-toast-hud';
+        Object.assign(toast.style, {
+            position: 'fixed',
+            top: '20px',
+            left: '20px',
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            padding: '12px 18px',
+            borderRadius: '6px',
+            fontFamily: '"Cascadia Code", "Fira Code", monospace',
+            zIndex: '1000000',
+            borderLeft: '4px solid #3b82f6',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            fontSize: '14px',
+            lineHeight: '1.4',
+            transition: 'opacity 0.5s ease, transform 0.5s ease',
+            opacity: '0',
+            transform: 'translateX(-20px)',
+            pointerEvents: 'none'
+        });
+
+        const timeInfo = (preset.q && preset.a && preset.q !== '-' && preset.a !== '-') ? ` | ${preset.q}s/${preset.a}s` : '';
+        toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span>${timeInfo} | ${preset.desc}`;
+        document.body.appendChild(toast);
+
+        // Trigger animation
+        requestAnimationFrame(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(0)';
+        });
+
+        clearTimeout(state.hudToastTimeout);
+        state.hudToastTimeout = setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(-20px)';
+            setTimeout(() => toast.remove(), 500);
+        }, 3000);
+    }
+
+    function applyPreset(index) {
+        currentPresetIndex = index;
+        const p = PRESETS[currentPresetIndex];
+
+        config.questionTimer = p.q;
+        config.answerTimer = p.a;
+
+        GM_setValue('presetIndex', currentPresetIndex);
+        GM_setValue('questionTimer', p.q);
+        GM_setValue('answerTimer', p.a);
+
+        showHUDToast(p);
+
+        // Update UI button icon
+        const btn = document.getElementById('eqe-btn-loadout');
+        if (btn) btn.innerHTML = p.emoji;
+
+        // Update settings inputs if open
+        const qInput = document.getElementById('eqe-question-timer');
+        const aInput = document.getElementById('eqe-answer-timer');
+        if (qInput) qInput.value = p.q;
+        if (aInput) aInput.value = p.a;
+
+        if (config.autoAdvanceEnabled) {
+            startTimer();
+        }
+    }
+
+    function cyclePreset() {
+        const nextIndex = (currentPresetIndex + 1) % PRESETS.length;
+        applyPreset(nextIndex);
+    }
+
+    function showPresetTable() {
+        const existing = document.getElementById('eqe-preset-overlay');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const isDark = isDarkMode();
+        const bg = isDark ? '#1f2937' : '#ffffff';
+        const text = isDark ? '#f3f4f6' : '#1f2937';
+        const border = isDark ? '#374151' : '#e5e7eb';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'eqe-preset-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: '2000000',
+            backdropFilter: 'blur(4px)'
+        });
+
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            backgroundColor: bg,
+            color: text,
+            padding: '24px',
+            borderRadius: '16px',
+            border: '2px solid #3b82f6',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
+            maxWidth: '500px',
+            width: '90%'
+        });
+
+        let tableHtml = `
+            <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Select Timer Loadout</h3>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-family: monospace;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid ${border}; text-align: left;">
+                            <th style="padding: 12px 8px;">Mode</th>
+                            <th style="padding: 12px 8px;">Q/A</th>
+                            <th style="padding: 12px 8px;">Goal</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        PRESETS.forEach((p, i) => {
+            const isSelected = i === currentPresetIndex;
+            tableHtml += `
+                <tr class="eqe-preset-row" data-index="${i}" style="cursor: pointer; border-bottom: 1px solid ${border}; ${isSelected ? 'background: rgba(59, 130, 246, 0.1);' : ''}">
+                    <td style="padding: 12px 8px; font-weight: bold;">${p.emoji} ${p.name}</td>
+                    <td style="padding: 12px 8px;">${p.q}s / ${p.a}s</td>
+                    <td style="padding: 12px 8px; font-size: 12px;">${p.desc}</td>
+                </tr>
+            `;
+        });
+
+        tableHtml += `
+                    </tbody>
+                </table>
+            </div>
+            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Click a row to select • Click background to close</p>
+        `;
+
+        panel.innerHTML = tableHtml;
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        const closeOnEsc = (e) => {
+            if (e.key === 'Escape') {
+                overlay.remove();
+                window.removeEventListener('keydown', closeOnEsc);
+            }
+        };
+        window.addEventListener('keydown', closeOnEsc);
+
+        panel.querySelectorAll('.eqe-preset-row').forEach(row => {
+            row.onclick = (e) => {
+                const index = parseInt(row.dataset.index);
+                applyPreset(index);
+                overlay.remove();
+            };
+            row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
+            row.onmouseout = () => {
+                const index = parseInt(row.dataset.index);
+                row.style.backgroundColor = index === currentPresetIndex ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
+            };
+        });
+
+        overlay.onclick = (e) => {
+            if (e.target === overlay) overlay.remove();
+        };
+    }
+
+    // ============================================================================
+    // COURSE SWITCHER & MODULE LOADOUTS
+    // ============================================================================
+
+    function scanAndSaveCourses() {
+        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+        const uniqueCourses = [];
+        const seenNames = new Set();
+        const seenIds = new Set();
+
+        courseLinks.forEach(link => {
+            const id = link.href.split('/').pop();
+            const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
+            let name = nameElement ? nameElement.innerText.trim() : "Unknown Module";
+
+            // Strip existing decoration if any (e.g., "press=[1] Module Name")
+            name = name.replace(/^(key=\d+|press=\[\d+\])\s+/, '');
+
+            const normalizedName = name.toLowerCase();
+
+            // Deduplicate by both ID and Name (case-insensitive) to prevent duplicates seen in UI
+            if (!seenIds.has(id) && !seenNames.has(normalizedName)) {
+                seenIds.add(id);
+                seenNames.add(normalizedName);
+                uniqueCourses.push({
+                    name: name,
+                    url: link.href,
+                    id: id
+                });
+            }
+        });
+
+        if (uniqueCourses.length > 0) {
+            GM_setValue('saved_courses', uniqueCourses);
+            // console.log(`[Auto-Advance] Scanned ${uniqueCourses.length} unique courses.`);
+        }
+    }
+
+    function decorateDashboardModules() {
+        if (!window.location.href.includes('/dashboard')) return;
+
+        const courses = GM_getValue('saved_courses', []);
+        if (courses.length === 0) return;
+
+        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+        courseLinks.forEach(link => {
+            const id = link.href.split('/').pop();
+            const courseIndex = courses.findIndex(c => c.id === id);
+
+            if (courseIndex !== -1) {
+                const num = courseIndex + 1;
+                const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
+                if (nameElement) {
+                    const desiredHtml = `<span style="color: #1793d1;">press=[${num}]</span> ${courses[courseIndex].name}`;
+                    if (nameElement.innerHTML !== desiredHtml) {
+                        nameElement.innerHTML = desiredHtml;
+                    }
+                }
+            }
+        });
+    }
+
+    function showCourseSwitcher() {
+        const existing = document.getElementById('eqe-course-overlay');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const courses = GM_getValue('saved_courses', []);
+        if (courses.length === 0) {
+            showHUDToast({
+                emoji: '❌',
+                name: 'Error',
+                desc: 'No courses found. Visit Dashboard first.'
+            });
+            return;
+        }
+
+        const isDark = isDarkMode();
+        const bg = isDark ? '#1f2937' : '#ffffff';
+        const text = isDark ? '#f3f4f6' : '#1f2937';
+        const border = isDark ? '#374151' : '#e5e7eb';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'eqe-course-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: '2000000',
+            backdropFilter: 'blur(4px)'
+        });
+
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            backgroundColor: bg,
+            color: text,
+            padding: '24px',
+            borderRadius: '16px',
+            border: '2px solid #3b82f6',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
+            maxWidth: '500px',
+            width: '90%',
+            maxHeight: '80vh',
+            overflowY: 'auto'
+        });
+
+        let tableHtml = `
+            <h3 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Select Course Module</h3>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-family: monospace;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid ${border}; text-align: left;">
+                            <th style="padding: 12px 8px;">#</th>
+                            <th style="padding: 12px 8px;">Course Name</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        courses.forEach((c, i) => {
+            const isCurrent = window.location.href.includes(c.id);
+            tableHtml += `
+                <tr class="eqe-course-row" data-url="${c.url}" style="cursor: pointer; border-bottom: 1px solid ${border}; ${isCurrent ? 'background: rgba(59, 130, 246, 0.1);' : ''}">
+                    <td style="padding: 12px 8px; font-weight: bold;">${i + 1}</td>
+                    <td style="padding: 12px 8px;">${c.name}</td>
+                </tr>
+            `;
+        });
+
+        tableHtml += `
+                    </tbody>
+                </table>
+            </div>
+            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Press 1-9 to select • [Esc] to close</p>
+        `;
+
+        panel.innerHTML = tableHtml;
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        const closeOnEsc = (e) => {
+            if (e.key === 'Escape') {
+                overlay.remove();
+                window.removeEventListener('keydown', closeOnEsc);
+                window.removeEventListener('keydown', handleNumberNav);
+            }
+        };
+
+        const handleNumberNav = (e) => {
+            // Only handle 1-9 for quick selection
+            if (/^[1-9]$/.test(e.key)) {
+                const num = parseInt(e.key);
+                if (num > 0 && num <= courses.length && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+                    window.location.href = courses[num - 1].url;
+                    overlay.remove();
+                    window.removeEventListener('keydown', closeOnEsc);
+                    window.removeEventListener('keydown', handleNumberNav);
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }
+        };
+
+        window.addEventListener('keydown', closeOnEsc);
+        window.addEventListener('keydown', handleNumberNav);
+
+        panel.querySelectorAll('.eqe-course-row').forEach(row => {
+            row.onclick = () => {
+                window.location.href = row.dataset.url;
+                overlay.remove();
+            };
+            row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
+            row.onmouseout = () => {
+                const isCurrent = window.location.href.includes(row.dataset.url.split('/').pop());
+                row.style.backgroundColor = isCurrent ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
+            };
+        });
+
+        overlay.onclick = (e) => {
+            if (e.target === overlay) {
+                overlay.remove();
+                window.removeEventListener('keydown', closeOnEsc);
+                window.removeEventListener('keydown', handleNumberNav);
+            }
+        };
+    }
+
+    // ============================================================================
+    // SIDEBAR TOGGLE
+    // ============================================================================
+
+    function toggleSidebar() {
+        // Find the sidebar (aside element)
+        const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
+        
+        if (!sidebar) {
+            console.log('[Auto-Advance] Sidebar not found');
+            return;
+        }
+
+        config.sidebarHidden = !config.sidebarHidden;
+        GM_setValue('sidebarHidden', config.sidebarHidden);
+
+        if (config.sidebarHidden) {
+            sidebar.style.display = 'none';
+            showToast('📐 Sidebar hidden', 'info');
+        } else {
+            sidebar.style.display = '';
+            showToast('📐 Sidebar visible', 'info');
+        }
+    }
+
+    // ============================================================================
+    // INLINE CONTROLS UI
+    // ============================================================================
+
+    function toggleAutoAdvance(btnElement) {
+        config.autoAdvanceEnabled = !config.autoAdvanceEnabled;
+        GM_setValue('autoAdvanceEnabled', config.autoAdvanceEnabled);
+
+        if (config.autoAdvanceEnabled) {
+            btnElement.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+            btnElement.title = "Pause Auto-Advance";
+            showToast('Auto-Advance enabled ▶️', 'success');
+
+            if (state.currentPhase) {
+                startTimer();
+            } else {
+                onQuestionLoad();
+            }
+        } else {
+            btnElement.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+            btnElement.title = "Start Auto-Advance";
+            showToast('Auto-Advance paused ⏸️', 'info');
+
+            clearTimer();
+            hideTimer();
+        }
+
+        const checkbox = document.getElementById('eqe-enable-autoadvance');
+        if (checkbox) {
+            checkbox.checked = config.autoAdvanceEnabled;
+        }
+    }
+
+    function injectInlineControls() {
+        const existing = document.getElementById('eqe-inline-container');
+        if (existing) existing.remove();
+
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const exitBtn = buttons.find(b => b.innerText.includes("Exit"));
+
+        if (exitBtn) {
+            console.log('[Auto-Advance] Injecting inline controls...');
+
+            const container = document.createElement('div');
+            container.id = 'eqe-inline-container';
+            container.style.display = 'flex';
+            container.style.alignItems = 'center';
+            container.style.gap = '8px';
+            container.style.marginRight = '8px';
+
+            const buttonStyleClass = getModuleStyle();
+
+            const btnLoadout = document.createElement('button');
+            btnLoadout.id = 'eqe-btn-loadout';
+            btnLoadout.className = buttonStyleClass;
+            btnLoadout.style.cursor = 'pointer';
+            btnLoadout.style.fontSize = '18px';
+            btnLoadout.innerHTML = PRESETS[currentPresetIndex].emoji;
+            btnLoadout.title = "Cycle Loadout (T) | Hold for Table";
+
+            btnLoadout.onmousedown = () => {
+                state.longPressTimeout = setTimeout(showPresetTable, 800);
+            };
+            btnLoadout.onmouseup = () => {
+                clearTimeout(state.longPressTimeout);
+            };
+            btnLoadout.onclick = () => {
+                if (document.getElementById('eqe-preset-overlay')) return;
+                cyclePreset();
+            };
+
+            const btnCourse = document.createElement('button');
+            btnCourse.id = 'eqe-btn-course';
+            btnCourse.className = buttonStyleClass;
+            btnCourse.style.cursor = 'pointer';
+            btnCourse.style.fontSize = '18px';
+            btnCourse.innerHTML = '📚';
+            btnCourse.title = "Course Switcher (Shift+M or 9)";
+            btnCourse.onclick = () => showCourseSwitcher();
+
+            const btnToggle = document.createElement('button');
+            btnToggle.id = 'eqe-btn-toggle';
+            btnToggle.className = buttonStyleClass;
+            btnToggle.style.cursor = 'pointer';
+
+            if (config.autoAdvanceEnabled) {
+                btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+                btnToggle.title = "Pause Auto-Advance";
+            } else {
+                btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+                btnToggle.title = "Start Auto-Advance";
+            }
+
+            btnToggle.onclick = () => toggleAutoAdvance(btnToggle);
+
+            const btnSidebar = document.createElement('button');
+            btnSidebar.className = buttonStyleClass;
+            btnSidebar.title = "Toggle Sidebar (H)";
+            btnSidebar.style.cursor = 'pointer';
+            btnSidebar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`;
+            btnSidebar.onclick = () => toggleSidebar();
+
+            const btnGear = document.createElement('button');
+            btnGear.className = buttonStyleClass;
+            btnGear.title = "Settings (Shift+S)";
+            btnGear.style.cursor = 'pointer';
+            btnGear.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
+            btnGear.onclick = () => toggleSettings();
+
+            container.appendChild(btnLoadout);
+            container.appendChild(btnCourse);
+            container.appendChild(btnToggle);
+            container.appendChild(btnSidebar);
+            container.appendChild(btnGear);
+
+            exitBtn.parentNode.insertBefore(container, exitBtn);
+        }
+    }
+
+    // ============================================================================
+    // DYNAMIC ISLAND TIMER DISPLAY
+    // ============================================================================
+
+    function createDynamicIslandTimer() {
+        const island = document.createElement('div');
+        island.id = 'eqe-dynamic-island';
+
+        const questionGradient = getDynamicGradient();
+        const answerGradient = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+        const lowTimeGradient = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+
+        Object.assign(island.style, {
+            position: 'fixed',
+            top: config.islandTop,
+            left: config.islandLeft,
+            transform: config.islandLeft === '50%' ? 'translateX(-50%) scale(0.8)' : 'scale(0.8)',
+            minWidth: '180px',
+            height: '44px',
+            background: questionGradient,
+            borderRadius: '22px',
+            zIndex: '999999',
+            display: 'none',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0 20px',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+            fontSize: '15px',
+            fontWeight: '600',
+            color: 'white',
+            cursor: 'default',
+            userSelect: 'none',
+            backdropFilter: 'blur(20px)',
+            transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            opacity: '0'
+        });
+
+        island.dataset.questionGradient = questionGradient;
+        island.dataset.answerGradient = answerGradient;
+        island.dataset.lowTimeGradient = lowTimeGradient;
+
+        return island;
+    }
+
+    function updateDynamicIslandTimer() {
+        const island = document.getElementById('eqe-dynamic-island');
+        if (!island) return;
+
+        const questionGradient = island.dataset.questionGradient;
+        const answerGradient = island.dataset.answerGradient;
+        const lowTimeGradient = island.dataset.lowTimeGradient;
+
+        if (!config.autoAdvanceEnabled || !state.currentPhase) {
+            island.style.opacity = '0';
+            island.style.transform = config.islandLeft === '50%' ? 'translateX(-50%) scale(0.8)' : 'scale(0.8)';
+            const hideTimeoutId = registerTimeout(setTimeout(() => {
+                island.style.display = 'none';
+                cleanupRegistry.timeouts.delete(hideTimeoutId);
+            }, 400));
+            return;
+        }
+
+        if (island.style.display === 'none') {
+            island.style.display = 'flex';
+            const showTimeoutId = registerTimeout(setTimeout(() => {
+                island.style.opacity = '1';
+                island.style.transform = config.islandLeft === '50%' ? 'translateX(-50%) scale(1)' : 'scale(1)';
+                cleanupRegistry.timeouts.delete(showTimeoutId);
+            }, 10));
+        }
+
+        const phase = state.currentPhase === 'question' ? 'Question' : 'Answer';
+        const emoji = state.currentPhase === 'question' ? '❓' : '✅';
+        const isLowTime = state.timeRemaining <= 3 && state.timeRemaining > 0;
+
+        let currentGradient = state.currentPhase === 'question' ? questionGradient : answerGradient;
+        if (isLowTime) currentGradient = lowTimeGradient;
+
+        island.style.background = currentGradient;
+
+        if (state.timeRemaining > 0) {
+            island.innerHTML = `
+                <span style="margin-right: 8px; font-size: 18px;">${emoji}</span>
+                <span style="opacity: 0.9; margin-right: 8px;">${phase}</span>
+                <span style="
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-variant-numeric: tabular-nums;
+                    min-width: 32px;
+                    text-align: center;
+                    ${isLowTime ? 'animation: pulse 1s infinite;' : ''}
+                ">${state.timeRemaining}s</span>
+            `;
+
+            if (isLowTime && !document.getElementById('eqe-pulse-animation')) {
+                const style = document.createElement('style');
+                style.id = 'eqe-pulse-animation';
+                style.textContent = `
+                    @keyframes pulse {
+                        0%, 100% { transform: scale(1); }
+                        50% { transform: scale(1.1); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        } else if (state.currentPhase) {
+            island.style.background = state.currentPhase === 'question' ? questionGradient : answerGradient;
+            island.innerHTML = `
+                <span style="margin-right: 8px; font-size: 18px;">${emoji}</span>
+                <span style="opacity: 0.9; margin-right: 8px;">${phase}</span>
+                <span style="font-size: 20px; font-weight: 700;">✓</span>
+            `;
+        }
+    }
+
+    function startCountdown(durationInSeconds) {
+        stopCountdown();
+
+        state.timeRemaining = durationInSeconds;
+        updateDynamicIslandTimer();
+
+        const intervalId = setInterval(() => {
+            state.timeRemaining--;
+            updateDynamicIslandTimer();
+
+            if (state.timeRemaining < 0) {
+                state.timeRemaining = 0;
+                updateDynamicIslandTimer();
+            }
+        }, 1000);
+
+        state.countdownInterval = registerInterval(intervalId);
+    }
+
+    function stopCountdown() {
+        if (state.countdownInterval) {
+            clearInterval(state.countdownInterval);
+            cleanupRegistry.intervals.delete(state.countdownInterval);
+            state.countdownInterval = null;
+        }
+    }
+
+    function hideTimer() {
+        stopCountdown();
+        state.timeRemaining = 0;
+        state.currentPhase = null;
+        updateDynamicIslandTimer();
+    }
+
+    // ============================================================================
+    // SETTINGS UI
+    // ============================================================================
+
+    function createSettingsPanel() {
+        const panel = document.createElement('div');
+        panel.id = 'eqe-auto-advance-settings';
+        panel.style.display = 'none';
+
+        const isDark = isDarkMode();
+        const lightColors = {
+            panelBg: 'white',
+            panelBorder: '#3b82f6',
+            h3Color: '#1f2937',
+            labelColor: '#4b5563',
+            inputBorder: '#d1d5db',
+            smallColor: '#6b7280',
+            borderTop: '#e5e7eb',
+            saveBtnBg: '#3b82f6',
+            saveBtnText: 'white',
+            closeBtnBg: '#6b7280',
+            closeBtnText: 'white',
+            kbdBg: '#f3f4f6',
+            kbdBorder: '#d1d5db',
+            kbdText: '#374151'
+        };
+        const darkColors = {
+            panelBg: '#1f2937',
+            panelBorder: '#60a5fa',
+            h3Color: '#f3f4f6',
+            labelColor: '#d1d5db',
+            inputBorder: '#4b5563',
+            smallColor: '#9ca3af',
+            borderTop: '#374151',
+            saveBtnBg: '#60a5fa',
+            saveBtnText: '#1f2937',
+            closeBtnBg: '#4b5563',
+            closeBtnText: '#f3f4f6',
+            kbdBg: '#374151',
+            kbdBorder: '#4b5563',
+            kbdText: '#d1d5db'
+        };
+        const colors = isDark ? darkColors : lightColors;
+
+        Object.assign(panel.style, {
+            position: 'fixed',
+            top: '80px',
+            right: '20px',
+            backgroundColor: colors.panelBg,
+            border: `2px solid ${colors.panelBorder}`,
+            borderRadius: '12px',
+            padding: '20px',
+            zIndex: '999999',
+            boxShadow: '0 8px 16px rgba(0, 0, 0, 0.2)',
+            minWidth: '320px',
+            maxWidth: '400px',
+            fontFamily: 'Arial, sans-serif',
+            maxHeight: '80vh',
+            overflowY: 'auto'
+        });
+
+        panel.innerHTML = `
+            <h3 style="margin: 0 0 15px 0; color: ${colors.h3Color}; font-size: 18px;">⚙️ Auto-Advance Settings</h3>
+
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                    <input type="checkbox" id="eqe-enable-autoadvance" ${config.autoAdvanceEnabled ? 'checked' : ''}
+                           style="width: 18px; height: 18px; cursor: pointer;">
+                    <span style="font-weight: 600; color: ${colors.labelColor};">Enable Auto-Advance</span>
+                </label>
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
+                    Question Timer (seconds):
+                </label>
+                <input type="number" id="eqe-question-timer" value="${config.questionTimer}"
+                       min="1" max="300"
+                       style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
+                <small style="color: ${colors.smallColor};">Time before auto-selecting an answer</small>
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
+                    Answer Timer (seconds):
+                </label>
+                <input type="number" id="eqe-answer-timer" value="${config.answerTimer}"
+                       min="1" max="300"
+                       style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
+                <small style="color: ${colors.smallColor};">Time to view answer before next question</small>
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                    <input type="checkbox" id="eqe-auto-select" ${config.autoSelectOnTimeout ? 'checked' : ''}
+                           style="width: 18px; height: 18px; cursor: pointer;">
+                    <span style="font-weight: 600; color: ${colors.labelColor};">Auto-select on timeout</span>
+                </label>
+                <small style="color: ${colors.smallColor}; margin-left: 28px; display: block; margin-top: 4px;">Randomly select answer when question timer expires</small>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="eqe-save-settings"
+                        style="flex: 1; padding: 10px; background: ${colors.saveBtnBg}; color: ${colors.saveBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Save
+                </button>
+                <button id="eqe-close-settings"
+                        style="flex: 1; padding: 10px; background: ${colors.closeBtnBg}; color: ${colors.closeBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Close
+                </button>
+            </div>
+
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid ${colors.borderTop};">
+                <h4 style="margin: 0 0 10px 0; color: ${colors.h3Color}; font-size: 14px; font-weight: 600;">⌨️ Keyboard Shortcuts</h4>
+                <div style="font-size: 12px; color: ${colors.smallColor}; line-height: 1.8;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">1-5</kbd> or <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A-E</kbd></span>
+                        <span style="color: ${colors.labelColor};">Select answer</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Space</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Enter</kbd></span>
+                        <span style="color: ${colors.labelColor};">Check answer</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">← →</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">↑ ↓</kbd></span>
+                        <span style="color: ${colors.labelColor};">Navigate questions</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">H</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Sidebar</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">C</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Official/Community</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
+                        <span style="color: ${colors.labelColor};">Open Explain</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">I</kbd></span>
+                        <span style="color: ${colors.labelColor};">View Image</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
+                        <span style="color: ${colors.labelColor};">Toggle Auto-Advance</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">S</kbd></span>
+                        <span style="color: ${colors.labelColor};">Open Settings</span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        panel.querySelector('#eqe-save-settings').addEventListener('click', saveSettings);
+        panel.querySelector('#eqe-close-settings').addEventListener('click', toggleSettings);
+
+        return panel;
+    }
+
+    function toggleSettings() {
+        const panel = document.getElementById('eqe-auto-advance-settings');
+        if (panel.style.display === 'none') {
+            panel.style.display = 'block';
+        } else {
+            panel.style.display = 'none';
+        }
+    }
+
+    function saveSettings() {
+        const questionTimer = parseInt(document.getElementById('eqe-question-timer').value);
+        const answerTimer = parseInt(document.getElementById('eqe-answer-timer').value);
+        const autoAdvanceEnabled = document.getElementById('eqe-enable-autoadvance').checked;
+        const autoSelectOnTimeout = document.getElementById('eqe-auto-select').checked;
+
+        if (isNaN(questionTimer) || questionTimer < 1 || questionTimer > 300) {
+            showToast('⚠️ Question timer must be between 1-300 seconds', 'warning');
+            return;
+        }
+
+        if (isNaN(answerTimer) || answerTimer < 1 || answerTimer > 300) {
+            showToast('⚠️ Answer timer must be between 1-300 seconds', 'warning');
+            return;
+        }
+
+        const wasEnabled = config.autoAdvanceEnabled;
+
+        config.questionTimer = questionTimer;
+        config.answerTimer = answerTimer;
+        config.autoAdvanceEnabled = autoAdvanceEnabled;
+        config.autoSelectOnTimeout = autoSelectOnTimeout;
+
+        GM_setValue('questionTimer', questionTimer);
+        GM_setValue('answerTimer', answerTimer);
+        GM_setValue('autoAdvanceEnabled', autoAdvanceEnabled);
+        GM_setValue('autoSelectOnTimeout', autoSelectOnTimeout);
+
+        showToast('✓ Settings saved successfully!', 'success');
+        toggleSettings();
+
+        const btnToggle = document.getElementById('eqe-btn-toggle');
+        if (btnToggle) {
+            if (autoAdvanceEnabled) {
+                btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+                btnToggle.title = "Pause Auto-Advance";
+            } else {
+                btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+                btnToggle.title = "Start Auto-Advance";
+            }
+        }
+
+        if (autoAdvanceEnabled && !wasEnabled) {
+            if (state.currentPhase) {
+                startTimer();
+            } else {
+                onQuestionLoad();
+            }
+        } else if (!autoAdvanceEnabled && wasEnabled) {
+            clearTimer();
+            hideTimer();
+        } else if (autoAdvanceEnabled && state.currentPhase) {
+            startTimer();
+        }
+    }
+
+    // ============================================================================
+    // TOAST NOTIFICATION
+    // ============================================================================
+
+    function showToast(message, type = 'info') {
+        const existingToast = document.getElementById('eqe-toast');
+        if (existingToast) {
+            existingToast.remove();
+        }
+
+        const isDark = isDarkMode();
+        const toast = document.createElement('div');
+        toast.id = 'eqe-toast';
+
+        const colors = {
+            success: isDark ? '#10b981' : '#059669',
+            warning: isDark ? '#f59e0b' : '#d97706',
+            info: isDark ? '#3b82f6' : '#2563eb'
+        };
+
+        Object.assign(toast.style, {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+            color: isDark ? '#f3f4f6' : '#1f2937',
+            padding: '12px 20px',
+            borderRadius: '8px',
+            border: `2px solid ${colors[type]}`,
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+            zIndex: '9999999',
+            fontSize: '14px',
+            fontWeight: '600',
+            fontFamily: 'Arial, sans-serif',
+            animation: 'slideIn 0.3s ease-out'
+        });
+
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        if (!document.getElementById('eqe-toast-style')) {
+            const style = document.createElement('style');
+            style.id = 'eqe-toast-style';
+            style.textContent = `
+                @keyframes slideIn {
+                    from {
+                        transform: translateX(400px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const toastTimeoutId = registerTimeout(setTimeout(() => {
+            toast.style.animation = 'slideIn 0.3s ease-out reverse';
+            const removeTimeoutId = registerTimeout(setTimeout(() => {
+                toast.remove();
+                cleanupRegistry.timeouts.delete(removeTimeoutId);
+            }, 300));
+            cleanupRegistry.timeouts.delete(toastTimeoutId);
+        }, 3000));
+    }
+
+    // ============================================================================
+    // TIMER LOGIC
+    // ============================================================================
+
+    function clearTimer() {
+        if (state.timerHandle) {
+            clearTimeout(state.timerHandle);
+            cleanupRegistry.timeouts.delete(state.timerHandle);
+            state.timerHandle = null;
+        }
+    }
+
+    function startTimer() {
+        if (!config.autoAdvanceEnabled) {
+            hideTimer();
+            return;
+        }
+
+        clearTimer();
+
+        if (state.currentPhase === 'question') {
+            startQuestionTimer();
+        } else if (state.currentPhase === 'answer') {
+            startAnswerTimer();
+        }
+    }
+
+    function startQuestionTimer() {
+        startCountdown(config.questionTimer);
+
+        const timerHandle = setTimeout(() => {
+            state.timeRemaining = 0;
+            updateDynamicIslandTimer();
+
+            // Auto-select answer if configured and no answer selected yet
+            if (config.autoSelectOnTimeout && !state.isAnswerSelected) {
+                selectRandomAnswer();
+
+                // After auto-selecting, wait a bit then click check button
+                playNotificationSound();
+                const checkTimeoutId = registerTimeout(setTimeout(() => {
+                    const btn = getCheckBtn();
+                    if (btn) {
+                        console.log('[Auto-Advance] Auto-clicking check button after random selection');
+                        btn.click();
+
+                        // Switch to answer phase
+                        clearTimer();
+                        const phaseTimeoutId = registerTimeout(setTimeout(() => {
+                            state.currentPhase = 'answer';
+                            if (config.autoAdvanceEnabled) {
+                                startAnswerTimer();
+                            } else {
+                                hideTimer();
+                            }
+                            cleanupRegistry.timeouts.delete(phaseTimeoutId);
+                        }, 300));
+                    }
+                    cleanupRegistry.timeouts.delete(checkTimeoutId);
+                }, 500));
+            }
+            // If user already selected an answer manually, just click check button
+            else if (state.isAnswerSelected) {
+                playNotificationSound();
+                const checkTimeoutId = registerTimeout(setTimeout(() => {
+                    const btn = getCheckBtn();
+                    if (btn) {
+                        console.log('[Auto-Advance] Auto-clicking check button after manual selection');
+                        btn.click();
+
+                        // Switch to answer phase
+                        clearTimer();
+                        const phaseTimeoutId = registerTimeout(setTimeout(() => {
+                            state.currentPhase = 'answer';
+                            if (config.autoAdvanceEnabled) {
+                                startAnswerTimer();
+                            } else {
+                                hideTimer();
+                            }
+                            cleanupRegistry.timeouts.delete(phaseTimeoutId);
+                        }, 300));
+                    }
+                    cleanupRegistry.timeouts.delete(checkTimeoutId);
+                }, 500));
+            }
+
+            cleanupRegistry.timeouts.delete(timerHandle);
+        }, config.questionTimer * 1000);
+
+        state.timerHandle = registerTimeout(timerHandle);
+    }
+
+    function startAnswerTimer() {
+        startCountdown(config.answerTimer);
+
+        const timerHandle = setTimeout(() => {
+            state.timeRemaining = 0;
+            updateDynamicIslandTimer();
+
+            playNotificationSound();
+
+            const hideTimeoutId = registerTimeout(setTimeout(() => {
+                hideTimer();
+
+                const nextBtn = getNextBtn();
+                if (nextBtn) {
+                    const arrowRightEvent = new KeyboardEvent('keydown', {
+                        key: 'ArrowRight',
+                        code: 'ArrowRight',
+                        bubbles: true
+                    });
+                    document.dispatchEvent(arrowRightEvent);
+                }
+                cleanupRegistry.timeouts.delete(hideTimeoutId);
+            }, 800));
+
+            cleanupRegistry.timeouts.delete(timerHandle);
+        }, config.answerTimer * 1000);
+
+        state.timerHandle = registerTimeout(timerHandle);
+    }
+
+    function selectRandomAnswer() {
+        const answerButtons = getAnswerButtons();
+
+        if (answerButtons.length > 0) {
+            const randomIndex = Math.floor(Math.random() * answerButtons.length);
+            const selectedButton = answerButtons[randomIndex];
+            selectedButton.click();
+
+            state.isAnswerSelected = true;
+            return;
+        }
+
+        const options = ['1', '2', '3', '4', '5'];
+        const randomOption = options[Math.floor(Math.random() * options.length)];
+
+        const keyEvent = new KeyboardEvent('keydown', {
+            key: randomOption,
+            code: `Digit${randomOption}`,
+            bubbles: true
+        });
+        document.dispatchEvent(keyEvent);
+
+        state.isAnswerSelected = true;
+    }
+
+    // ============================================================================
+    // QUESTION DETECTION WITH DEBOUNCING
+    // ============================================================================
+
+    function onQuestionLoad() {
+        if (state.questionLoadDebounce) {
+            clearTimeout(state.questionLoadDebounce);
+            cleanupRegistry.timeouts.delete(state.questionLoadDebounce);
+        }
+
+        const debounceId = setTimeout(() => {
+            if (state.isProcessingNewQuestion) {
+                console.log('[Auto-Advance] Question load already in progress, skipping...');
+                return;
+            }
+
+            state.isProcessingNewQuestion = true;
+
+            try {
+                const currentQuestion = getQuestionText();
+
+                const shouldForceTimerStart = state.manuallyNavigated;
+                if (state.manuallyNavigated) {
+                    state.manuallyNavigated = false;
+                }
+
+                if (currentQuestion && (currentQuestion !== state.lastQuestionText || shouldForceTimerStart)) {
+                    console.log('[Auto-Advance] New question detected');
+                    state.lastQuestionText = currentQuestion;
+                    state.currentPhase = 'question';
+                    state.isAnswerSelected = false;
+                    state.spacePressed = false;
+                    state.answerSelectedAfterSpace = false;
+
+                    if (config.autoAdvanceEnabled) {
+                        startTimer();
+                    } else {
+                        hideTimer();
+                    }
+                }
+            } catch (error) {
+                console.error('[Auto-Advance] Error in onQuestionLoad:', error);
+            } finally {
+                const releaseTimeoutId = registerTimeout(setTimeout(() => {
+                    state.isProcessingNewQuestion = false;
+                    cleanupRegistry.timeouts.delete(releaseTimeoutId);
+                }, 100));
+            }
+
+            cleanupRegistry.timeouts.delete(debounceId);
+        }, 150);
+
+        state.questionLoadDebounce = registerTimeout(debounceId);
+    }
+
+    // ============================================================================
+    // KEYBOARD HANDLER
+    // ============================================================================
+
+    function handleKeydown(e) {
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+            if (!document.activeElement.id.startsWith('eqe-')) return;
+        }
+
+        const key = e.key.toLowerCase();
+
+        // Direct module selection on Dashboard
+        if (/^[1-9]$/.test(key) && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+            if (window.location.href.includes('/dashboard')) {
+                const courses = GM_getValue('saved_courses', []);
+                const num = parseInt(key);
+                if (num > 0 && num <= courses.length) {
+                    window.location.href = courses[num - 1].url;
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    return;
+                }
+            }
+        }
+
+        if (key === '0' || (key === 'd' && e.shiftKey)) {
+            window.location.href = 'https://www.e-qe.online/dashboard';
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === '6') {
+            toggleSettings();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === '7') {
+            const btnToggle = document.getElementById('eqe-btn-toggle');
+            if (btnToggle) {
+                toggleAutoAdvance(btnToggle);
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === '8') {
+            cyclePreset();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === '9' || (key === 'm' && e.shiftKey)) {
+            showCourseSwitcher();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (e.key === 'Escape') {
+            const settings = document.getElementById('eqe-auto-advance-settings');
+            if (settings && settings.style.display !== 'none') {
+                toggleSettings();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === 't') {
+            if (e.altKey) {
+                showPresetTable();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                return;
+            }
+
+            if (!state.tKeyPressTimer) {
+                state.tKeyPressTimer = registerTimeout(setTimeout(() => {
+                    showPresetTable();
+                    state.tKeyLongPressed = true;
+                }, 1000));
+            }
+            return;
+        }
+
+        if (key === 's' && e.shiftKey) {
+            toggleSettings();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === 'c') {
+            const cBtn = getCGroupBtn();
+            if (cBtn) {
+                cBtn.click();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === 'a' && e.shiftKey) {
+            const btnToggle = document.getElementById('eqe-btn-toggle');
+            if (btnToggle) {
+                toggleAutoAdvance(btnToggle);
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        if (key === 'a' && !e.shiftKey) {
+            const aBtn = getExplainBtn();
+            if (aBtn) {
+                aBtn.click();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        // Handle 'i' key for View Image button
+        if (key === 'i') {
+            const imageBtn = getViewImageBtn();
+            if (imageBtn) {
+                imageBtn.click();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+            return;
+        }
+
+        // Handle 'h' key for toggling sidebar
+        if (key === 'h') {
+            toggleSidebar();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (['1', '2', '3', '4', '5'].includes(key)) {
+            state.isAnswerSelected = true;
+
+            if (state.spacePressed && !state.answerSelectedAfterSpace) {
+                state.answerSelectedAfterSpace = true;
+            }
+        }
+
+        if (e.key === ' ' || e.key === 'Enter') {
+            const btn = getCheckBtn();
+            if (btn) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                if (!state.spacePressed) {
+                    state.spacePressed = true;
+
+                    if (!state.isAnswerSelected) {
+                        return;
+                    } else {
+                        btn.click();
+
+                        clearTimer();
+                        const phaseTimeoutId = registerTimeout(setTimeout(() => {
+                            state.currentPhase = 'answer';
+                            if (config.autoAdvanceEnabled) {
+                                startAnswerTimer();
+                            } else {
+                                hideTimer();
+                            }
+                            cleanupRegistry.timeouts.delete(phaseTimeoutId);
+                        }, 300));
+                    }
+                } else if (state.answerSelectedAfterSpace) {
+                    btn.click();
+
+                    clearTimer();
+                    const phaseTimeoutId = registerTimeout(setTimeout(() => {
+                        state.currentPhase = 'answer';
+                        state.spacePressed = false;
+                        state.answerSelectedAfterSpace = false;
+                        if (config.autoAdvanceEnabled) {
+                            startAnswerTimer();
+                        } else {
+                            hideTimer();
+                        }
+                        cleanupRegistry.timeouts.delete(phaseTimeoutId);
+                    }, 300));
+                } else {
+                    btn.click();
+                }
+            }
+            return;
+        }
+
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+
+        e.preventDefault();
+        e.stopImmediatePropagation();
+
+        clearTimer();
+        stopCountdown();
+
+        state.manuallyNavigated = true;
+
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            getNextBtn()?.click();
+            const navTimeoutId = registerTimeout(setTimeout(() => {
+                state.lastQuestionText = null;
+                onQuestionLoad();
+                cleanupRegistry.timeouts.delete(navTimeoutId);
+            }, 200));
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            getPrevBtn()?.click();
+            const navTimeoutId = registerTimeout(setTimeout(() => {
+                state.lastQuestionText = null;
+                onQuestionLoad();
+                cleanupRegistry.timeouts.delete(navTimeoutId);
+            }, 200));
+        }
+    }
+
+    function handleKeyup(e) {
+        if (e.key.toLowerCase() === 't') {
+            if (state.tKeyPressTimer) {
+                clearTimeout(state.tKeyPressTimer);
+                cleanupRegistry.timeouts.delete(state.tKeyPressTimer);
+                state.tKeyPressTimer = null;
+            }
+            if (!state.tKeyLongPressed && !e.altKey) {
+                cyclePreset();
+            }
+            state.tKeyLongPressed = false;
+        }
+    }
+
+    // ============================================================================
+    // INITIALIZATION
+    // ============================================================================
+
+    function init() {
+        console.log('[Auto-Advance] Initializing v7.8 with Fixed Auto-Advance...');
+
+        if (!document.getElementById('eqe-auto-advance-settings')) {
+            const settings = createSettingsPanel();
+            document.body.appendChild(settings);
+        }
+
+        if (!document.getElementById('eqe-dynamic-island')) {
+            const island = createDynamicIslandTimer();
+            document.body.appendChild(island);
+        }
+
+        injectInlineControls();
+
+        // Apply saved sidebar state
+        if (config.sidebarHidden) {
+            const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
+            if (sidebar) {
+                sidebar.style.display = 'none';
+            }
+        }
+
+        registerEventListener(document, 'keydown', handleKeydown, true);
+        registerEventListener(document, 'keyup', handleKeyup, true);
+
+        // Dashboard Scanning
+        if (window.location.href.includes('/dashboard')) {
+            scanAndSaveCourses();
+            decorateDashboardModules();
+        }
+
+        const initTimeoutId = registerTimeout(setTimeout(() => {
+            state.lastQuestionText = getQuestionText();
+            if (config.autoAdvanceEnabled) {
+                onQuestionLoad();
+            }
+
+            // Current Course Notification on Lesson Page
+            if (window.location.href.includes('/lesson/')) {
+                const courses = GM_getValue('saved_courses', []);
+                const currentId = window.location.href.split('/').pop();
+                const currentCourse = courses.find(c => c.id === currentId);
+                if (currentCourse) {
+                    showHUDToast({
+                        emoji: '📍',
+                        name: 'Current Course',
+                        q: '-',
+                        a: '-',
+                        desc: currentCourse.name
+                    });
+                }
+            }
+
+            cleanupRegistry.timeouts.delete(initTimeoutId);
+        }, 500));
+    }
+
+    const observer = new MutationObserver((mutations) => {
+        if (!document.getElementById('eqe-inline-container')) {
+            injectInlineControls();
+        }
+        if (window.location.href !== state.lastUrl) {
+            state.lastUrl = window.location.href;
+            injectInlineControls();
+        }
+        if (window.location.href.includes('/dashboard')) {
+            scanAndSaveCourses();
+            decorateDashboardModules();
+        }
+    });
+
+    registerObserver(observer);
+
+    registerEventListener(window, 'beforeunload', cleanup, false);
+    registerEventListener(window, 'pagehide', cleanup, false);
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            init();
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    } else {
+        init();
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    const fallbackInitTimeoutId = registerTimeout(setTimeout(init, 1000));
+    cleanupRegistry.timeouts.delete(fallbackInitTimeoutId);
+})();

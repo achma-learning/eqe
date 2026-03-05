@@ -61,3 +61,14 @@
 - Refined **Auto-Advance Logic**: Simplified question detection to allow smoother transitions on both lesson and exam pages.
 - Improved **HUD Notifications**: Course name toasts now appear on exam initialization.
 - Updated internal version and initialization logging to **7.8**.
+
+## 2026-03-05 18:30 - Version 7.9
+- Added **Keyboard Shortcuts Help (⌨️)**:
+    - New button in the top-right controls to quickly view all shortcuts.
+    - New shortcut **`Shift + ?`** to open the help overlay.
+    - Dynamic help overlay that stays in sync with current script logic.
+- Updated **Loadout Shortcuts**:
+    - Changed **`Alt + T`** to **`Shift + T`** for opening the timer selection table.
+    - Refined long-press vs. short-press logic for the **`T`** key.
+- Updated **Documentation Mandates**: Added rules to keep the inline help overlay synced with `shortcuts.txt`.
+- Updated internal version and initialization logging to **7.9**.

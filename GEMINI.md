@@ -6,16 +6,6 @@ This directory serves as a development environment for a multi-faceted project. 
 
 This component focuses on improving the user experience on the `e-qe.online` website by providing an "auto-advance" feature, similar to Anki flashcards. It automates progression through questions and answers based on configurable timers, offering a hands-free review experience. The script has been refined to operate reliably within the website's complex and JavaScript-heavy (Next.js/React) page structure.
 
-### Key Files:
-*   **`userscript.txt`**: The core JavaScript userscript (Version 4.8). It integrates:
-    *   A draggable gear icon for accessing settings.
-    *   A "Dynamic Island" style visual countdown timer with theme adaptation and low-time animations.
-    *   Smart keyboard handling for navigation, answer submission, and custom shortcuts.
-    *   Robust auto-advancement through question and answer phases.
-    *   Notification sounds on timer expiration.
-*   **`diagnostic_userscript.txt`**: A supplementary userscript used for debugging DOM changes, element presence, and URL changes on `e-qe.online`.
-*   **`idea.md`**: Provides a detailed explanation of the Anki auto-advance feature, serving as conceptual inspiration.
-*   **`context.txt`**: Contains historical context and feedback from the iterative development of `userscript.txt`.
 
 ### Functionality:
 The userscript enhances `e-qe.online` with:
@@ -31,6 +21,7 @@ The userscript enhances `e-qe.online` with:
     *   `A`: Open Explain button.
     *   `Shift + A` / `Shift + P`: Pause/Resume Auto-Advance.
     *   `Shift + S`: Open/Close Settings Panel.
+    *   `Shift + ?`: Show Keyboard Shortcuts Help.
 
 ### Website Organization:
 *   **Main Page**: `https://www.e-qe.online/dashboard`
@@ -93,4 +84,5 @@ This project aims to provide versatile tools for both web enhancement and advanc
 After each significant update to `userscript.txt`, you **must**:
 1.  **Update `shortcuts.txt`**: Ensure all keyboard shortcuts and UI controls are accurately reflected.
 2.  **Update `changelogs.md`**: Add a new entry following the format: `(Date and Time) - Version (X.X) - [Bullet list of changes]`.
+3.  **Sync `showShortcutsHelp`**: If `shortcuts.txt` is updated, you **must** update the `showShortcutsHelp()` function in `userscript.txt` to reflect the changes in the "⌨️" help overlay.
 

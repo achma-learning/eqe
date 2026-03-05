@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      7.8
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Inline auto-advance controls with loadouts • Enhanced HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
+// @version      7.9
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (Shift+M) • Dashboard Direct Navigation (1-9)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -665,6 +665,109 @@
         };
     }
 
+    function showShortcutsHelp() {
+        const existing = document.getElementById('eqe-shortcuts-overlay');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const isDark = isDarkMode();
+        const bg = isDark ? '#1f2937' : '#ffffff';
+        const text = isDark ? '#f3f4f6' : '#1f2937';
+        const kbdBg = isDark ? '#374151' : '#f3f4f6';
+        const kbdBorder = isDark ? '#4b5563' : '#d1d5db';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'eqe-shortcuts-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: '2000000',
+            backdropFilter: 'blur(4px)'
+        });
+
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            backgroundColor: bg,
+            color: text,
+            padding: '24px',
+            borderRadius: '16px',
+            border: '2px solid #3b82f6',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
+            maxWidth: '600px',
+            width: '95%',
+            maxHeight: '85vh',
+            overflowY: 'auto',
+            fontFamily: 'sans-serif'
+        });
+
+        const kbd = (key) => `<kbd style="background: ${kbdBg}; border: 1px solid ${kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace;">${key}</kbd>`;
+
+        panel.innerHTML = `
+            <h3 style="margin: 0 0 20px 0; font-size: 22px; font-weight: 700; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">⌨️ Keyboard Shortcuts & Controls</h3>
+            
+            <div style="margin-bottom: 20px;">
+                <h4 style="font-size: 16px; margin-bottom: 10px; color: #3b82f6;">Navigation (Lesson & Exam)</h4>
+                <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
+                    <li>${kbd('1')} – ${kbd('5')} or ${kbd('A')} – ${kbd('E')} : Select Answer</li>
+                    <li>${kbd('Space')} or ${kbd('Enter')} : Check/Submit Answer</li>
+                    <li>${kbd('←')} ${kbd('→')} ${kbd('↑')} ${kbd('↓')} : Previous/Next Question</li>
+                    <li>${kbd('0')} or ${kbd('Shift + D')} : Go to Dashboard</li>
+                    <li>${kbd('1')} – ${kbd('9')} (on Dashboard) : Direct Module Navigation</li>
+                </ul>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <h4 style="font-size: 16px; margin-bottom: 10px; color: #3b82f6;">Script Features</h4>
+                <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
+                    <li>${kbd('H')} : Toggle Sidebar Visibility</li>
+                    <li>${kbd('I')} : View Image</li>
+                    <li>${kbd('C')} : Toggle Official/Community</li>
+                    <li>${kbd('A')} : Open AI Explanation</li>
+                    <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
+                    <li>${kbd('Shift + S')} or ${kbd('6')} : Open Settings Panel</li>
+                    <li>${kbd('Shift + ?')} : This Help Overlay</li>
+                    <li>${kbd('Esc')} : Close Overlays / Settings</li>
+                </ul>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <h4 style="font-size: 16px; margin-bottom: 10px; color: #3b82f6;">Presets & Courses</h4>
+                <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
+                    <li>${kbd('T')} or ${kbd('8')} : Cycle Timer Loadout</li>
+                    <li>${kbd('Shift + T')} or Hold ${kbd('T')} : Show Loadout Table</li>
+                    <li>${kbd('9')} or ${kbd('Shift + M')} : Open Course Switcher</li>
+                </ul>
+            </div>
+
+            <p style="margin: 20px 0 0 0; font-size: 13px; opacity: 0.7; text-align: center; font-style: italic;">Click background or press [Esc] to close</p>
+        `;
+
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        const closeOverlay = (e) => {
+            if (e.key === 'Escape') {
+                overlay.remove();
+                window.removeEventListener('keydown', closeOverlay);
+            }
+        };
+        window.addEventListener('keydown', closeOverlay);
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    }
+
+    // ============================================================================
+    // SIDEBAR TOGGLE
+    // ============================================================================
+
     // ============================================================================
     // SIDEBAR TOGGLE
     // ============================================================================
@@ -792,6 +895,14 @@
             btnSidebar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`;
             btnSidebar.onclick = () => toggleSidebar();
 
+            const btnShortcuts = document.createElement('button');
+            btnShortcuts.className = buttonStyleClass;
+            btnShortcuts.title = "Keyboard Shortcuts Help (Shift+?)";
+            btnShortcuts.style.cursor = 'pointer';
+            btnShortcuts.style.fontSize = '18px';
+            btnShortcuts.innerHTML = '⌨️';
+            btnShortcuts.onclick = () => showShortcutsHelp();
+
             const btnGear = document.createElement('button');
             btnGear.className = buttonStyleClass;
             btnGear.title = "Settings (Shift+S)";
@@ -803,6 +914,7 @@
             container.appendChild(btnCourse);
             container.appendChild(btnToggle);
             container.appendChild(btnSidebar);
+            container.appendChild(btnShortcuts);
             container.appendChild(btnGear);
 
             exitBtn.parentNode.insertBefore(container, exitBtn);
@@ -1529,7 +1641,7 @@
         }
 
         if (key === 't') {
-            if (e.altKey) {
+            if (e.shiftKey) {
                 showPresetTable();
                 e.preventDefault();
                 e.stopImmediatePropagation();
@@ -1596,6 +1708,14 @@
         // Handle 'h' key for toggling sidebar
         if (key === 'h') {
             toggleSidebar();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        // Handle Shift + ? for shortcuts help
+        if (key === '?' || (e.key === '?' && e.shiftKey)) {
+            showShortcutsHelp();
             e.preventDefault();
             e.stopImmediatePropagation();
             return;
@@ -1691,7 +1811,7 @@
                 cleanupRegistry.timeouts.delete(state.tKeyPressTimer);
                 state.tKeyPressTimer = null;
             }
-            if (!state.tKeyLongPressed && !e.altKey) {
+            if (!state.tKeyLongPressed && !e.shiftKey) {
                 cyclePreset();
             }
             state.tKeyLongPressed = false;
@@ -1703,7 +1823,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v7.8 with Fixed Auto-Advance...');
+        console.log('[Auto-Advance] Initializing v7.9 with Shortcuts Help...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

@@ -14,11 +14,12 @@
 - **`A`** : Open AI Explanation (Explain button)
 - **`Shift + A`** or **`7`** : Enable/Disable Auto-Advance (Pause/Play)
 - **`Shift + S`** or **`6`** : Open Settings Panel
+- **`Shift + ?`** : Show Keyboard Shortcuts Help
 - **`Esc`** : Close Settings Panel or Overlays
 
 ## Loadout / Timer Presets
 - **`T`** or **`8`** : Cycle Loadout (⭐ Default → 🏎️ Velocity → 📝 Exam)
-- **`Alt + T`** : Open Loadout Selection Table
+- **`Shift + T`** : Open Loadout Selection Table
 - **Hold `T` (>1s)** : Open Loadout Selection Table
 
 ## Course Switcher & Modules
@@ -35,5 +36,7 @@
     - **Click** : Enable/Disable Auto-Advance
 - **Sidebar Button** (☰):
     - **Click** : Toggle Sidebar Visibility
+- **Keyboard Button** (⌨️):
+    - **Click** : Show Keyboard Shortcuts Help
 - **Gear Button** (⚙️):
     - **Click** : Open Settings Panel

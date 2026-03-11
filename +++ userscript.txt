@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.3
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Dashboard nav confirmation • Settings closes on outside click
+// @version      8.4
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Dashboard nav confirmation • Settings closes on outside click • Pomotroid donut session timer
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -58,6 +58,18 @@
         // --- v8.3: dashboard confirmation state ---
         dashboardConfirmPending: false,
         dashboardConfirmTimeout: null
+    };
+
+    // ============================================================================
+    // POMOTROID SESSION TIMER STATE  (v8.4)
+    // ============================================================================
+
+    const POMO_TOTAL_SECONDS = 40 * 60; // 40 minutes
+
+    const pomoState = {
+        running: false,
+        remaining: POMO_TOTAL_SECONDS,
+        interval: null
     };
 
     const cleanupRegistry = {
@@ -693,6 +705,127 @@
     }
 
     // ============================================================================
+    // POMOTROID SESSION TIMER BUTTON  (v8.4)
+    // ── Pomotroid-style SVG donut button. 40 min default. Click to start/pause.
+    // ── The ring drains smoothly each second. Text shows minutes remaining.
+    // ── When time is up: ring flashes red briefly then resets.
+    // ============================================================================
+
+    function createPomotroidBtn(buttonStyleClass) {
+        // The SVG uses the circumference=100 trick:
+        // radius = 15.9155  →  C = 2π·r ≈ 100
+        // stroke-dashoffset = 100 − percentageLeft  maps 1:1 with time left
+        const btn = document.createElement('button');
+        btn.id = 'eqe-btn-pomo';
+        btn.title = 'Session Timer — click to start/pause (40 min)';
+        btn.style.cssText = 'background:none;border:none;padding:0;cursor:pointer;width:36px;height:36px;position:relative;flex-shrink:0;';
+
+        btn.innerHTML = `
+            <svg id="eqe-pomo-svg" viewBox="0 0 36 36"
+                 style="width:100%;height:100%;transform:rotate(-90deg);display:block;">
+                <!-- track -->
+                <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="3.5"
+                    d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
+                <!-- progress ring -->
+                <path id="eqe-pomo-ring" fill="none"
+                    stroke="#ff4e4d" stroke-width="3.5" stroke-linecap="round"
+                    stroke-dasharray="100,100" stroke-dashoffset="0"
+                    style="transition:stroke-dashoffset 1s linear,stroke 0.3s;"
+                    d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
+                <!-- label — counter-rotated so it reads upright -->
+                <text id="eqe-pomo-text" x="18" y="18"
+                    fill="#ffffff" font-size="9.5" font-weight="700"
+                    text-anchor="middle" dominant-baseline="central"
+                    style="transform:rotate(90deg);transform-origin:50% 50%;font-family:-apple-system,sans-serif;">
+                    40
+                </text>
+            </svg>`;
+
+        btn.addEventListener('click', togglePomotroid);
+        return btn;
+    }
+
+    function togglePomotroid() {
+        if (pomoState.running) {
+            // Pause
+            pomoState.running = false;
+            clearInterval(pomoState.interval);
+            pomoState.interval = null;
+            updatePomotroidVisuals();
+        } else {
+            // Start / resume
+            if (pomoState.remaining <= 0) {
+                // Reset before starting
+                pomoState.remaining = POMO_TOTAL_SECONDS;
+            }
+            pomoState.running = true;
+            pomoState.interval = setInterval(() => {
+                pomoState.remaining--;
+                updatePomotroidVisuals();
+
+                if (pomoState.remaining <= 0) {
+                    clearInterval(pomoState.interval);
+                    pomoState.interval = null;
+                    pomoState.running = false;
+                    onPomotroidFinished();
+                }
+            }, 1000);
+            updatePomotroidVisuals();
+        }
+    }
+
+    function updatePomotroidVisuals() {
+        const ring = document.getElementById('eqe-pomo-ring');
+        const text = document.getElementById('eqe-pomo-text');
+        if (!ring || !text) return;
+
+        const pct = Math.max(0, (pomoState.remaining / POMO_TOTAL_SECONDS) * 100);
+        ring.style.strokeDashoffset = (100 - pct).toFixed(2);
+
+        // Text: ceil so 39m55s still shows 40 until it crosses the minute boundary
+        const minsLeft = Math.ceil(pomoState.remaining / 60);
+        text.textContent = minsLeft > 0 ? minsLeft : '0';
+
+        // Colour shifts: green > 50%, amber 20-50%, red <20%
+        if (!pomoState.running) {
+            ring.style.stroke = 'rgba(255,255,255,0.45)'; // paused — greyed
+        } else if (pct > 50) {
+            ring.style.stroke = '#ff4e4d'; // Pomotroid coral
+        } else if (pct > 20) {
+            ring.style.stroke = '#f59e0b'; // amber warning
+        } else {
+            ring.style.stroke = '#ef4444'; // urgent red
+        }
+
+        // Update button tooltip
+        const btn = document.getElementById('eqe-btn-pomo');
+        if (btn) {
+            const m = Math.floor(pomoState.remaining / 60);
+            const s = (pomoState.remaining % 60).toString().padStart(2, '0');
+            btn.title = pomoState.running
+                ? `Session Timer — ${m}:${s} left (click to pause)`
+                : `Session Timer — ${m}:${s} left (click to resume)`;
+        }
+    }
+
+    function onPomotroidFinished() {
+        const ring = document.getElementById('eqe-pomo-ring');
+        const text = document.getElementById('eqe-pomo-text');
+        if (ring) ring.style.stroke = '#10b981'; // brief green flash on finish
+        if (text) text.textContent = '✓';
+
+        playNotificationSound();
+        showToast('🍅 Session complete! Take a break.', 'success');
+
+        // Reset visuals after 3 s
+        setTimeout(() => {
+            pomoState.remaining = POMO_TOTAL_SECONDS;
+            updatePomotroidVisuals();
+            if (text) text.textContent = '40';
+        }, 3000);
+    }
+
+    // ============================================================================
     // INLINE CONTROLS UI
     // ============================================================================
 
@@ -791,11 +924,15 @@
             btnGear.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
             btnGear.onclick = () => toggleSettings();
 
+            // v8.4 — Pomotroid session timer button
+            const btnPomo = createPomotroidBtn(buttonStyleClass);
+
             container.appendChild(btnLoadout);
             container.appendChild(btnCourse);
             container.appendChild(btnToggle);
             container.appendChild(btnSidebar);
             container.appendChild(btnShortcuts);
+            container.appendChild(btnPomo);
             container.appendChild(btnGear);
 
             exitBtn.parentNode.insertBefore(container, exitBtn);
@@ -1532,7 +1669,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v8.3...');
+        console.log('[Auto-Advance] Initializing v8.4...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

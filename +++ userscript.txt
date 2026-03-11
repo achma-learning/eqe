@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.1
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Background Music (P)
+// @version      8.3
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Dashboard nav confirmation • Settings closes on outside click
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @license      MIT
 // @run-at       document-idle
+// @downloadURL https://update.greasyfork.org/scripts/559366/eqe%20fmpm%20-%20e-qeonline%20Auto-Advance%20%2B%20Inline%20Controls%20%5BIMPROVED%5D.user.js
+// @updateURL https://update.greasyfork.org/scripts/559366/eqe%20fmpm%20-%20e-qeonline%20Auto-Advance%20%2B%20Inline%20Controls%20%5BIMPROVED%5D.meta.js
 // ==/UserScript==
 
 (() => {
@@ -24,9 +26,6 @@
         { id: 'exam', emoji: '📝', name: 'Exam', q: 40, a: 20, desc: 'Real exam mode 1h' }
     ];
 
-    const AUDIO_SRC = 'https://raw.githubusercontent.com/achma-learning/eqe/main/Paniyolo%20-%20Coloring-LFpHsbRrK4M.mp3';
-    let audioInstance = null;
-
     let currentPresetIndex = GM_getValue('presetIndex', 0);
 
     let config = {
@@ -36,8 +35,7 @@
         islandTop: GM_getValue('islandTop', '10px'),
         islandLeft: GM_getValue('islandLeft', '50%'),
         autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
-        sidebarHidden: GM_getValue('sidebarHidden', false),
-        musicEnabled: GM_getValue('musicEnabled', false)
+        sidebarHidden: GM_getValue('sidebarHidden', false)
     };
 
     let state = {
@@ -56,7 +54,10 @@
         hudToastTimeout: null,
         longPressTimeout: null,
         tKeyPressTimer: null,
-        tKeyLongPressed: false
+        tKeyLongPressed: false,
+        // --- v8.3: dashboard confirmation state ---
+        dashboardConfirmPending: false,
+        dashboardConfirmTimeout: null
     };
 
     const cleanupRegistry = {
@@ -67,64 +68,59 @@
     };
 
     // ============================================================================
-    // DOM SELECTORS (UPDATED FOR NEW BUTTON STRUCTURE)
+    // DOM SELECTORS
     // ============================================================================
 
     const getNextBtn = () => {
-        // Strategy 1: Look for chevron-right SVG (most reliable for new UI)
         const buttons = document.querySelectorAll('button');
         for (const btn of buttons) {
             const svg = btn.querySelector('svg.lucide-chevron-right');
             if (svg) return btn;
         }
-
-        // Strategy 2: Look for text content (multi-language support)
         for (const btn of buttons) {
             const text = btn.textContent?.trim().toLowerCase();
             if (text && (text.includes('next') || text.includes('suivant'))) {
                 return btn;
             }
         }
-
-        // Strategy 3: Old method (fallback for backward compatibility)
         return document.querySelector('button[aria-label*="next" i], button[aria-label="Next question" i]');
     };
 
     const getPrevBtn = () => {
-        // Strategy 1: Look for chevron-left SVG (most reliable for new UI)
         const buttons = document.querySelectorAll('button');
         for (const btn of buttons) {
             const svg = btn.querySelector('svg.lucide-chevron-left');
             if (svg) return btn;
         }
-
-        // Strategy 2: Look for text content (multi-language support)
         for (const btn of buttons) {
             const text = btn.textContent?.trim().toLowerCase();
             if (text && (text.includes('previous') || text.includes('précédent') || text.includes('prev'))) {
                 return btn;
             }
         }
-
-        // Strategy 3: Old method (fallback for backward compatibility)
         return document.querySelector('button[aria-label*="previous" i], button[aria-label="Previous question" i]');
     };
 
+    // ── v8.3 FIX #1 ─────────────────────────────────────────────────────────────
+    // Added 'réponse' (French) to text matching alongside 'answer' (English).
+    // The site renders the button as "Answer" in English and "Réponse" in French.
+    // ────────────────────────────────────────────────────────────────────────────
     const getCheckBtn = () => {
         const buttons = [...document.querySelectorAll('button')];
 
-        // Strategy 1: Look for the new "Answer" button with circle-check-big icon
+        // Primary: exact text match for known button labels (EN + FR) + check icon
         const answerBtn = buttons.find(b => {
-            const hasAnswerText = b.textContent?.trim().toLowerCase() === 'answer';
+            const text = b.textContent?.trim().toLowerCase();
+            const hasAnswerText = text === 'answer' || text === 'réponse';
             const hasCheckIcon = b.querySelector('svg.lucide-circle-check-big');
             return hasAnswerText && hasCheckIcon && !b.disabled;
         });
         if (answerBtn) return answerBtn;
 
-        // Strategy 2: Old method (fallback)
+        // Fallback: broader text pattern (EN + FR variants)
         return buttons.find(b => {
             const text = b.textContent?.trim();
-            return /check\s*answer|submit|verify|show\s*answer|^answer$/i.test(text) && !b.disabled;
+            return /check\s*answer|submit|verify|show\s*answer|^answer$|^réponse$/i.test(text) && !b.disabled;
         });
     };
 
@@ -139,15 +135,8 @@
 
     const getViewImageBtn = () => {
         const buttons = [...document.querySelectorAll('button')];
-
-        // Strategy 1: Look for button with lucide-image SVG icon
-        const imageBtn = buttons.find(b => {
-            const hasImageIcon = b.querySelector('svg.lucide-image');
-            return hasImageIcon;
-        });
+        const imageBtn = buttons.find(b => b.querySelector('svg.lucide-image'));
         if (imageBtn) return imageBtn;
-
-        // Strategy 2: Look for button with "View Image" text (screen reader text)
         return buttons.find(b => {
             const srText = b.querySelector('.sr-only')?.textContent?.trim().toLowerCase();
             const ariaLabel = b.getAttribute('aria-label')?.toLowerCase();
@@ -158,7 +147,6 @@
 
     const getAnswerButtons = () => {
         const potentialAnswerContainers = document.querySelectorAll('div.select-none.border.p-3.shadow-md.cursor-pointer');
-
         return Array.from(potentialAnswerContainers).filter(container => {
             const firstChild = container.firstElementChild;
             if (firstChild && firstChild.textContent) {
@@ -231,9 +219,7 @@
     // ============================================================================
 
     const isDarkMode = () => {
-        if (document.documentElement.classList.contains('dark')) {
-            return true;
-        }
+        if (document.documentElement.classList.contains('dark')) return true;
         return window.matchMedia('(prefers-color-scheme: dark)').matches;
     };
 
@@ -325,7 +311,6 @@
         toast.innerHTML = `<span style="color: #fbbf24; font-weight: bold;">${preset.emoji} ${preset.name}</span>${timeInfo} | ${preset.desc}`;
         document.body.appendChild(toast);
 
-        // Trigger animation
         requestAnimationFrame(() => {
             toast.style.opacity = '1';
             toast.style.transform = 'translateX(0)';
@@ -352,11 +337,9 @@
 
         showHUDToast(p);
 
-        // Update UI button icon
         const btn = document.getElementById('eqe-btn-loadout');
         if (btn) btn.innerHTML = p.emoji;
 
-        // Update settings inputs if open
         const qInput = document.getElementById('eqe-question-timer');
         const aInput = document.getElementById('eqe-answer-timer');
         if (qInput) qInput.value = p.q;
@@ -388,28 +371,20 @@
         overlay.id = 'eqe-preset-overlay';
         Object.assign(overlay.style, {
             position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
+            top: '0', left: '0', width: '100%', height: '100%',
             backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
             zIndex: '2000000',
             backdropFilter: 'blur(4px)'
         });
 
         const panel = document.createElement('div');
         Object.assign(panel.style, {
-            backgroundColor: bg,
-            color: text,
-            padding: '24px',
-            borderRadius: '16px',
+            backgroundColor: bg, color: text,
+            padding: '24px', borderRadius: '16px',
             border: '2px solid #3b82f6',
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            maxWidth: '500px',
-            width: '90%'
+            maxWidth: '500px', width: '90%'
         });
 
         let tableHtml = `
@@ -449,33 +424,23 @@
         document.body.appendChild(overlay);
 
         const closeOnEsc = (e) => {
-            if (e.key === 'Escape') {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOnEsc);
-            }
+            if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); }
         };
         window.addEventListener('keydown', closeOnEsc);
 
         panel.querySelectorAll('.eqe-preset-row').forEach(row => {
-            row.onclick = (e) => {
-                const index = parseInt(row.dataset.index);
-                applyPreset(index);
-                overlay.remove();
-            };
+            row.onclick = () => { applyPreset(parseInt(row.dataset.index)); overlay.remove(); };
             row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
             row.onmouseout = () => {
-                const index = parseInt(row.dataset.index);
-                row.style.backgroundColor = index === currentPresetIndex ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
+                row.style.backgroundColor = parseInt(row.dataset.index) === currentPresetIndex ? 'rgba(59, 130, 246, 0.1)' : 'transparent';
             };
         });
 
-        overlay.onclick = (e) => {
-            if (e.target === overlay) overlay.remove();
-        };
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
     }
 
     // ============================================================================
-    // COURSE SWITCHER & MODULE LOADOUTS
+    // COURSE SWITCHER
     // ============================================================================
 
     function scanAndSaveCourses() {
@@ -488,49 +453,33 @@
             const id = link.href.split('/').pop();
             const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
             let name = nameElement ? nameElement.innerText.trim() : "Unknown Module";
-
-            // Strip existing decoration if any (e.g., "press=[1] Module Name")
             name = name.replace(/^(key=\d+|press=\[\d+\])\s+/, '');
-
             const normalizedName = name.toLowerCase();
 
-            // Deduplicate by both ID and Name (case-insensitive) to prevent duplicates seen in UI
             if (!seenIds.has(id) && !seenNames.has(normalizedName)) {
                 seenIds.add(id);
                 seenNames.add(normalizedName);
-                uniqueCourses.push({
-                    name: name,
-                    url: link.href,
-                    id: id
-                });
+                uniqueCourses.push({ name, url: link.href, id });
             }
         });
 
-        if (uniqueCourses.length > 0) {
-            GM_setValue('saved_courses', uniqueCourses);
-            // console.log(`[Auto-Advance] Scanned ${uniqueCourses.length} unique courses.`);
-        }
+        if (uniqueCourses.length > 0) GM_setValue('saved_courses', uniqueCourses);
     }
 
     function decorateDashboardModules() {
         if (!window.location.href.includes('/dashboard')) return;
-
         const courses = GM_getValue('saved_courses', []);
         if (courses.length === 0) return;
 
-        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
-        courseLinks.forEach(link => {
+        document.querySelectorAll('a[href*="/dashboard/course/"]').forEach(link => {
             const id = link.href.split('/').pop();
             const courseIndex = courses.findIndex(c => c.id === id);
-
             if (courseIndex !== -1) {
                 const num = courseIndex + 1;
                 const nameElement = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
                 if (nameElement) {
                     const desiredHtml = `<span style="color: #1793d1;">press=[${num}]</span> ${courses[courseIndex].name}`;
-                    if (nameElement.innerHTML !== desiredHtml) {
-                        nameElement.innerHTML = desiredHtml;
-                    }
+                    if (nameElement.innerHTML !== desiredHtml) nameElement.innerHTML = desiredHtml;
                 }
             }
         });
@@ -538,18 +487,11 @@
 
     function showCourseSwitcher() {
         const existing = document.getElementById('eqe-course-overlay');
-        if (existing) {
-            existing.remove();
-            return;
-        }
+        if (existing) { existing.remove(); return; }
 
         const courses = GM_getValue('saved_courses', []);
         if (courses.length === 0) {
-            showHUDToast({
-                emoji: '❌',
-                name: 'Error',
-                desc: 'No courses found. Visit Dashboard first.'
-            });
+            showHUDToast({ emoji: '❌', name: 'Error', desc: 'No courses found. Visit Dashboard first.' });
             return;
         }
 
@@ -561,31 +503,19 @@
         const overlay = document.createElement('div');
         overlay.id = 'eqe-course-overlay';
         Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
+            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
             backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: '2000000',
-            backdropFilter: 'blur(4px)'
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: '2000000', backdropFilter: 'blur(4px)'
         });
 
         const panel = document.createElement('div');
         Object.assign(panel.style, {
-            backgroundColor: bg,
-            color: text,
-            padding: '24px',
-            borderRadius: '16px',
+            backgroundColor: bg, color: text,
+            padding: '24px', borderRadius: '16px',
             border: '2px solid #3b82f6',
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            maxWidth: '500px',
-            width: '90%',
-            maxHeight: '80vh',
-            overflowY: 'auto'
+            maxWidth: '500px', width: '90%', maxHeight: '80vh', overflowY: 'auto'
         });
 
         let tableHtml = `
@@ -611,12 +541,8 @@
             `;
         });
 
-        tableHtml += `
-                    </tbody>
-                </table>
-            </div>
-            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Press 1-9 to select • [Esc] to close</p>
-        `;
+        tableHtml += `</tbody></table></div>
+            <p style="margin: 20px 0 0 0; font-size: 12px; opacity: 0.7; text-align: center;">Press 1-9 to select • [Esc] to close</p>`;
 
         panel.innerHTML = tableHtml;
         overlay.appendChild(panel);
@@ -631,10 +557,9 @@
         };
 
         const handleNumberNav = (e) => {
-            // Only handle 1-9 for quick selection
-            if (/^[1-9]$/.test(e.key)) {
+            if (/^[1-9]$/.test(e.key) && !e.shiftKey && !e.ctrlKey && !e.altKey) {
                 const num = parseInt(e.key);
-                if (num > 0 && num <= courses.length && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+                if (num > 0 && num <= courses.length) {
                     window.location.href = courses[num - 1].url;
                     overlay.remove();
                     window.removeEventListener('keydown', closeOnEsc);
@@ -649,10 +574,7 @@
         window.addEventListener('keydown', handleNumberNav);
 
         panel.querySelectorAll('.eqe-course-row').forEach(row => {
-            row.onclick = () => {
-                window.location.href = row.dataset.url;
-                overlay.remove();
-            };
+            row.onclick = () => { window.location.href = row.dataset.url; overlay.remove(); };
             row.onmouseover = () => row.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
             row.onmouseout = () => {
                 const isCurrent = window.location.href.includes(row.dataset.url.split('/').pop());
@@ -671,10 +593,7 @@
 
     function showShortcutsHelp() {
         const existing = document.getElementById('eqe-shortcuts-overlay');
-        if (existing) {
-            existing.remove();
-            return;
-        }
+        if (existing) { existing.remove(); return; }
 
         const isDark = isDarkMode();
         const bg = isDark ? '#1f2937' : '#ffffff';
@@ -685,31 +604,19 @@
         const overlay = document.createElement('div');
         overlay.id = 'eqe-shortcuts-overlay';
         Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100%',
-            height: '100%',
+            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
             backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: '2000000',
-            backdropFilter: 'blur(4px)'
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: '2000000', backdropFilter: 'blur(4px)'
         });
 
         const panel = document.createElement('div');
         Object.assign(panel.style, {
-            backgroundColor: bg,
-            color: text,
-            padding: '24px',
-            borderRadius: '16px',
+            backgroundColor: bg, color: text,
+            padding: '24px', borderRadius: '16px',
             border: '2px solid #3b82f6',
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
-            maxWidth: '600px',
-            width: '95%',
-            maxHeight: '85vh',
-            overflowY: 'auto',
+            maxWidth: '600px', width: '95%', maxHeight: '85vh', overflowY: 'auto',
             fontFamily: 'sans-serif'
         });
 
@@ -717,14 +624,14 @@
 
         panel.innerHTML = `
             <h3 style="margin: 0 0 20px 0; font-size: 22px; font-weight: 700; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">⌨️ Keyboard Shortcuts & Controls</h3>
-            
+
             <div style="margin-bottom: 20px;">
                 <h4 style="font-size: 16px; margin-bottom: 10px; color: #3b82f6;">Navigation (Lesson & Exam)</h4>
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('1')} – ${kbd('5')} : Select Answer</li>
                     <li>${kbd('Space')} or ${kbd('Enter')} : Check/Submit Answer</li>
                     <li>${kbd('←')} ${kbd('→')} ${kbd('↑')} ${kbd('↓')} : Previous/Next Question</li>
-                    <li>${kbd('0')} or ${kbd('Shift + D')} : Go to Dashboard</li>
+                    <li>${kbd('0')} or ${kbd('Shift + D')} : Go to Dashboard <em style="font-size:11px;opacity:0.7;">(press 0 twice to confirm)</em></li>
                     <li>${kbd('1')} – ${kbd('9')} (on Dashboard) : Direct Module Navigation</li>
                 </ul>
             </div>
@@ -734,7 +641,6 @@
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('H')} : Toggle Sidebar Visibility</li>
                     <li>${kbd('I')} : View Image</li>
-                    <li>${kbd('P')} : Toggle Background Music</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
@@ -760,10 +666,7 @@
         document.body.appendChild(overlay);
 
         const closeOverlay = (e) => {
-            if (e.key === 'Escape') {
-                overlay.remove();
-                window.removeEventListener('keydown', closeOverlay);
-            }
+            if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOverlay); }
         };
         window.addEventListener('keydown', closeOverlay);
         overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
@@ -773,18 +676,9 @@
     // SIDEBAR TOGGLE
     // ============================================================================
 
-    // ============================================================================
-    // SIDEBAR TOGGLE
-    // ============================================================================
-
     function toggleSidebar() {
-        // Find the sidebar (aside element)
         const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
-        
-        if (!sidebar) {
-            console.log('[Auto-Advance] Sidebar not found');
-            return;
-        }
+        if (!sidebar) { console.log('[Auto-Advance] Sidebar not found'); return; }
 
         config.sidebarHidden = !config.sidebarHidden;
         GM_setValue('sidebarHidden', config.sidebarHidden);
@@ -795,42 +689,6 @@
         } else {
             sidebar.style.display = '';
             showToast('📐 Sidebar visible', 'info');
-        }
-    }
-
-    // ============================================================================
-    // BACKGROUND MUSIC
-    // ============================================================================
-
-    function getAudio() {
-        if (!audioInstance) {
-            audioInstance = new Audio(AUDIO_SRC);
-            audioInstance.loop = true;
-        }
-        return audioInstance;
-    }
-
-    function toggleMusic(btnElement) {
-        const audio = getAudio();
-        config.musicEnabled = !config.musicEnabled;
-        GM_setValue('musicEnabled', config.musicEnabled);
-
-        if (config.musicEnabled) {
-            audio.play().catch(e => {
-                console.warn('[Auto-Advance] Music play failed (requires interaction):', e);
-                config.musicEnabled = false;
-                GM_setValue('musicEnabled', false);
-                if (btnElement) btnElement.innerHTML = '🔇';
-                showToast('⚠️ Click page to allow music', 'warning');
-            });
-            if (config.musicEnabled) {
-                if (btnElement) btnElement.innerHTML = '🔊';
-                showToast('🔊 Music playing', 'success');
-            }
-        } else {
-            audio.pause();
-            if (btnElement) btnElement.innerHTML = '🔇';
-            showToast('🔇 Music paused', 'info');
         }
     }
 
@@ -846,25 +704,17 @@
             btnElement.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
             btnElement.title = "Pause Auto-Advance";
             showToast('Auto-Advance enabled ▶️', 'success');
-
-            if (state.currentPhase) {
-                startTimer();
-            } else {
-                onQuestionLoad();
-            }
+            if (state.currentPhase) { startTimer(); } else { onQuestionLoad(); }
         } else {
             btnElement.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
             btnElement.title = "Start Auto-Advance";
             showToast('Auto-Advance paused ⏸️', 'info');
-
             clearTimer();
             hideTimer();
         }
 
         const checkbox = document.getElementById('eqe-enable-autoadvance');
-        if (checkbox) {
-            checkbox.checked = config.autoAdvanceEnabled;
-        }
+        if (checkbox) checkbox.checked = config.autoAdvanceEnabled;
     }
 
     function injectInlineControls() {
@@ -893,17 +743,9 @@
             btnLoadout.style.fontSize = '18px';
             btnLoadout.innerHTML = PRESETS[currentPresetIndex].emoji;
             btnLoadout.title = "Cycle Loadout (T) | Hold for Table";
-
-            btnLoadout.onmousedown = () => {
-                state.longPressTimeout = setTimeout(showPresetTable, 800);
-            };
-            btnLoadout.onmouseup = () => {
-                clearTimeout(state.longPressTimeout);
-            };
-            btnLoadout.onclick = () => {
-                if (document.getElementById('eqe-preset-overlay')) return;
-                cyclePreset();
-            };
+            btnLoadout.onmousedown = () => { state.longPressTimeout = setTimeout(showPresetTable, 800); };
+            btnLoadout.onmouseup = () => { clearTimeout(state.longPressTimeout); };
+            btnLoadout.onclick = () => { if (document.getElementById('eqe-preset-overlay')) return; cyclePreset(); };
 
             const btnCourse = document.createElement('button');
             btnCourse.id = 'eqe-btn-course';
@@ -914,20 +756,10 @@
             btnCourse.title = "Course Switcher (M or 9)";
             btnCourse.onclick = () => showCourseSwitcher();
 
-            const btnMusic = document.createElement('button');
-            btnMusic.id = 'eqe-btn-music';
-            btnMusic.className = buttonStyleClass;
-            btnMusic.style.cursor = 'pointer';
-            btnMusic.style.fontSize = '18px';
-            btnMusic.innerHTML = config.musicEnabled ? '🔊' : '🔇';
-            btnMusic.title = "Toggle Background Music (P)";
-            btnMusic.onclick = () => toggleMusic(btnMusic);
-
             const btnToggle = document.createElement('button');
             btnToggle.id = 'eqe-btn-toggle';
             btnToggle.className = buttonStyleClass;
             btnToggle.style.cursor = 'pointer';
-
             if (config.autoAdvanceEnabled) {
                 btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
                 btnToggle.title = "Pause Auto-Advance";
@@ -935,7 +767,6 @@
                 btnToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
                 btnToggle.title = "Start Auto-Advance";
             }
-
             btnToggle.onclick = () => toggleAutoAdvance(btnToggle);
 
             const btnSidebar = document.createElement('button');
@@ -962,7 +793,6 @@
 
             container.appendChild(btnLoadout);
             container.appendChild(btnCourse);
-            container.appendChild(btnMusic);
             container.appendChild(btnToggle);
             container.appendChild(btnSidebar);
             container.appendChild(btnShortcuts);
@@ -989,22 +819,16 @@
             top: config.islandTop,
             left: config.islandLeft,
             transform: config.islandLeft === '50%' ? 'translateX(-50%) scale(0.8)' : 'scale(0.8)',
-            minWidth: '180px',
-            height: '44px',
+            minWidth: '180px', height: '44px',
             background: questionGradient,
             borderRadius: '22px',
             zIndex: '999999',
-            display: 'none',
-            alignItems: 'center',
-            justifyContent: 'center',
+            display: 'none', alignItems: 'center', justifyContent: 'center',
             padding: '0 20px',
             boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2)',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            fontSize: '15px',
-            fontWeight: '600',
-            color: 'white',
-            cursor: 'default',
-            userSelect: 'none',
+            fontSize: '15px', fontWeight: '600', color: 'white',
+            cursor: 'default', userSelect: 'none',
             backdropFilter: 'blur(20px)',
             transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
             opacity: '0'
@@ -1057,25 +881,12 @@
             island.innerHTML = `
                 <span style="margin-right: 8px; font-size: 18px;">${emoji}</span>
                 <span style="opacity: 0.9; margin-right: 8px;">${phase}</span>
-                <span style="
-                    font-size: 20px;
-                    font-weight: 700;
-                    font-variant-numeric: tabular-nums;
-                    min-width: 32px;
-                    text-align: center;
-                    ${isLowTime ? 'animation: pulse 1s infinite;' : ''}
-                ">${state.timeRemaining}s</span>
+                <span style="font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 32px; text-align: center; ${isLowTime ? 'animation: pulse 1s infinite;' : ''}">${state.timeRemaining}s</span>
             `;
-
             if (isLowTime && !document.getElementById('eqe-pulse-animation')) {
                 const style = document.createElement('style');
                 style.id = 'eqe-pulse-animation';
-                style.textContent = `
-                    @keyframes pulse {
-                        0%, 100% { transform: scale(1); }
-                        50% { transform: scale(1.1); }
-                    }
-                `;
+                style.textContent = `@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }`;
                 document.head.appendChild(style);
             }
         } else if (state.currentPhase) {
@@ -1090,18 +901,13 @@
 
     function startCountdown(durationInSeconds) {
         stopCountdown();
-
         state.timeRemaining = durationInSeconds;
         updateDynamicIslandTimer();
 
         const intervalId = setInterval(() => {
             state.timeRemaining--;
             updateDynamicIslandTimer();
-
-            if (state.timeRemaining < 0) {
-                state.timeRemaining = 0;
-                updateDynamicIslandTimer();
-            }
+            if (state.timeRemaining < 0) { state.timeRemaining = 0; updateDynamicIslandTimer(); }
         }, 1000);
 
         state.countdownInterval = registerInterval(intervalId);
@@ -1124,6 +930,10 @@
 
     // ============================================================================
     // SETTINGS UI
+    // ── v8.3 FIX #3 ─────────────────────────────────────────────────────────────
+    // toggleSettings now attaches a one-shot outside-click listener when opening,
+    // matching the behaviour of all other overlays (course switcher, preset table).
+    // ────────────────────────────────────────────────────────────────────────────
     // ============================================================================
 
     function createSettingsPanel() {
@@ -1133,54 +943,28 @@
 
         const isDark = isDarkMode();
         const lightColors = {
-            panelBg: 'white',
-            panelBorder: '#3b82f6',
-            h3Color: '#1f2937',
-            labelColor: '#4b5563',
-            inputBorder: '#d1d5db',
-            smallColor: '#6b7280',
-            borderTop: '#e5e7eb',
-            saveBtnBg: '#3b82f6',
-            saveBtnText: 'white',
-            closeBtnBg: '#6b7280',
-            closeBtnText: 'white',
-            kbdBg: '#f3f4f6',
-            kbdBorder: '#d1d5db',
-            kbdText: '#374151'
+            panelBg: 'white', panelBorder: '#3b82f6', h3Color: '#1f2937',
+            labelColor: '#4b5563', inputBorder: '#d1d5db', smallColor: '#6b7280',
+            borderTop: '#e5e7eb', saveBtnBg: '#3b82f6', saveBtnText: 'white',
+            closeBtnBg: '#6b7280', closeBtnText: 'white',
+            kbdBg: '#f3f4f6', kbdBorder: '#d1d5db', kbdText: '#374151'
         };
         const darkColors = {
-            panelBg: '#1f2937',
-            panelBorder: '#60a5fa',
-            h3Color: '#f3f4f6',
-            labelColor: '#d1d5db',
-            inputBorder: '#4b5563',
-            smallColor: '#9ca3af',
-            borderTop: '#374151',
-            saveBtnBg: '#60a5fa',
-            saveBtnText: '#1f2937',
-            closeBtnBg: '#4b5563',
-            closeBtnText: '#f3f4f6',
-            kbdBg: '#374151',
-            kbdBorder: '#4b5563',
-            kbdText: '#d1d5db'
+            panelBg: '#1f2937', panelBorder: '#60a5fa', h3Color: '#f3f4f6',
+            labelColor: '#d1d5db', inputBorder: '#4b5563', smallColor: '#9ca3af',
+            borderTop: '#374151', saveBtnBg: '#60a5fa', saveBtnText: '#1f2937',
+            closeBtnBg: '#4b5563', closeBtnText: '#f3f4f6',
+            kbdBg: '#374151', kbdBorder: '#4b5563', kbdText: '#d1d5db'
         };
         const colors = isDark ? darkColors : lightColors;
 
         Object.assign(panel.style, {
-            position: 'fixed',
-            top: '80px',
-            right: '20px',
-            backgroundColor: colors.panelBg,
-            border: `2px solid ${colors.panelBorder}`,
-            borderRadius: '12px',
-            padding: '20px',
-            zIndex: '999999',
-            boxShadow: '0 8px 16px rgba(0, 0, 0, 0.2)',
-            minWidth: '320px',
-            maxWidth: '400px',
-            fontFamily: 'Arial, sans-serif',
-            maxHeight: '80vh',
-            overflowY: 'auto'
+            position: 'fixed', top: '80px', right: '20px',
+            backgroundColor: colors.panelBg, border: `2px solid ${colors.panelBorder}`,
+            borderRadius: '12px', padding: '20px',
+            zIndex: '999999', boxShadow: '0 8px 16px rgba(0, 0, 0, 0.2)',
+            minWidth: '320px', maxWidth: '400px',
+            fontFamily: 'Arial, sans-serif', maxHeight: '80vh', overflowY: 'auto'
         });
 
         panel.innerHTML = `
@@ -1195,21 +979,15 @@
             </div>
 
             <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
-                    Question Timer (seconds):
-                </label>
-                <input type="number" id="eqe-question-timer" value="${config.questionTimer}"
-                       min="1" max="300"
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">Question Timer (seconds):</label>
+                <input type="number" id="eqe-question-timer" value="${config.questionTimer}" min="1" max="300"
                        style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
                 <small style="color: ${colors.smallColor};">Time before auto-selecting an answer</small>
             </div>
 
             <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">
-                    Answer Timer (seconds):
-                </label>
-                <input type="number" id="eqe-answer-timer" value="${config.answerTimer}"
-                       min="1" max="300"
+                <label style="display: block; margin-bottom: 5px; color: ${colors.labelColor}; font-size: 14px;">Answer Timer (seconds):</label>
+                <input type="number" id="eqe-answer-timer" value="${config.answerTimer}" min="1" max="300"
                        style="width: 100%; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color};">
                 <small style="color: ${colors.smallColor};">Time to view answer before next question</small>
             </div>
@@ -1224,60 +1002,8 @@
             </div>
 
             <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button id="eqe-save-settings"
-                        style="flex: 1; padding: 10px; background: ${colors.saveBtnBg}; color: ${colors.saveBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                    Save
-                </button>
-                <button id="eqe-close-settings"
-                        style="flex: 1; padding: 10px; background: ${colors.closeBtnBg}; color: ${colors.closeBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                    Close
-                </button>
-            </div>
-
-            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid ${colors.borderTop};">
-                <h4 style="margin: 0 0 10px 0; color: ${colors.h3Color}; font-size: 14px; font-weight: 600;">⌨️ Keyboard Shortcuts</h4>
-                <div style="font-size: 12px; color: ${colors.smallColor}; line-height: 1.8;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">1-5</kbd></span>
-                        <span style="color: ${colors.labelColor};">Select answer</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Space</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Enter</kbd></span>
-                        <span style="color: ${colors.labelColor};">Check answer</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">← →</kbd> / <kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">↑ ↓</kbd></span>
-                        <span style="color: ${colors.labelColor};">Navigate questions</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">H</kbd></span>
-                        <span style="color: ${colors.labelColor};">Toggle Sidebar</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">C</kbd></span>
-                        <span style="color: ${colors.labelColor};">Toggle Official/Community</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
-                        <span style="color: ${colors.labelColor};">Open Explain</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">I</kbd></span>
-                        <span style="color: ${colors.labelColor};">View Image</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">P</kbd></span>
-                        <span style="color: ${colors.labelColor};">Toggle Music</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">A</kbd></span>
-                        <span style="color: ${colors.labelColor};">Toggle Auto-Advance</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span><kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">Shift</kbd>+<kbd style="background: ${colors.kbdBg}; border: 1px solid ${colors.kbdBorder}; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: ${colors.kbdText};">S</kbd></span>
-                        <span style="color: ${colors.labelColor};">Open Settings</span>
-                    </div>
-                </div>
+                <button id="eqe-save-settings" style="flex: 1; padding: 10px; background: ${colors.saveBtnBg}; color: ${colors.saveBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Save</button>
+                <button id="eqe-close-settings" style="flex: 1; padding: 10px; background: ${colors.closeBtnBg}; color: ${colors.closeBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Close</button>
             </div>
         `;
 
@@ -1289,8 +1015,28 @@
 
     function toggleSettings() {
         const panel = document.getElementById('eqe-auto-advance-settings');
+        if (!panel) return;
+
         if (panel.style.display === 'none') {
             panel.style.display = 'block';
+
+            // ── v8.3 FIX #3 ──────────────────────────────────────────────────
+            // Attach a one-shot mousedown listener so clicking anywhere outside
+            // the panel dismisses it, matching all other overlay behaviour.
+            // We use mousedown (not click) to fire before focus shifts, and
+            // setTimeout ensures the listener is added AFTER this event cycle
+            // so the same click that opened the panel doesn't also close it.
+            // ─────────────────────────────────────────────────────────────────
+            const outsideClickHandler = (e) => {
+                if (!panel.contains(e.target)) {
+                    panel.style.display = 'none';
+                    document.removeEventListener('mousedown', outsideClickHandler, true);
+                }
+            };
+            setTimeout(() => {
+                document.addEventListener('mousedown', outsideClickHandler, true);
+            }, 0);
+
         } else {
             panel.style.display = 'none';
         }
@@ -1306,14 +1052,12 @@
             showToast('⚠️ Question timer must be between 1-300 seconds', 'warning');
             return;
         }
-
         if (isNaN(answerTimer) || answerTimer < 1 || answerTimer > 300) {
             showToast('⚠️ Answer timer must be between 1-300 seconds', 'warning');
             return;
         }
 
         const wasEnabled = config.autoAdvanceEnabled;
-
         config.questionTimer = questionTimer;
         config.answerTimer = answerTimer;
         config.autoAdvanceEnabled = autoAdvanceEnabled;
@@ -1339,11 +1083,7 @@
         }
 
         if (autoAdvanceEnabled && !wasEnabled) {
-            if (state.currentPhase) {
-                startTimer();
-            } else {
-                onQuestionLoad();
-            }
+            if (state.currentPhase) { startTimer(); } else { onQuestionLoad(); }
         } else if (!autoAdvanceEnabled && wasEnabled) {
             clearTimer();
             hideTimer();
@@ -1358,9 +1098,7 @@
 
     function showToast(message, type = 'info') {
         const existingToast = document.getElementById('eqe-toast');
-        if (existingToast) {
-            existingToast.remove();
-        }
+        if (existingToast) existingToast.remove();
 
         const isDark = isDarkMode();
         const toast = document.createElement('div');
@@ -1373,18 +1111,13 @@
         };
 
         Object.assign(toast.style, {
-            position: 'fixed',
-            bottom: '20px',
-            right: '20px',
+            position: 'fixed', bottom: '20px', right: '20px',
             backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
             color: isDark ? '#f3f4f6' : '#1f2937',
-            padding: '12px 20px',
-            borderRadius: '8px',
+            padding: '12px 20px', borderRadius: '8px',
             border: `2px solid ${colors[type]}`,
             boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-            zIndex: '9999999',
-            fontSize: '14px',
-            fontWeight: '600',
+            zIndex: '9999999', fontSize: '14px', fontWeight: '600',
             fontFamily: 'Arial, sans-serif',
             animation: 'slideIn 0.3s ease-out'
         });
@@ -1395,18 +1128,7 @@
         if (!document.getElementById('eqe-toast-style')) {
             const style = document.createElement('style');
             style.id = 'eqe-toast-style';
-            style.textContent = `
-                @keyframes slideIn {
-                    from {
-                        transform: translateX(400px);
-                        opacity: 0;
-                    }
-                    to {
-                        transform: translateX(0);
-                        opacity: 1;
-                    }
-                }
-            `;
+            style.textContent = `@keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`;
             document.head.appendChild(style);
         }
 
@@ -1433,18 +1155,10 @@
     }
 
     function startTimer() {
-        if (!config.autoAdvanceEnabled) {
-            hideTimer();
-            return;
-        }
-
+        if (!config.autoAdvanceEnabled) { hideTimer(); return; }
         clearTimer();
-
-        if (state.currentPhase === 'question') {
-            startQuestionTimer();
-        } else if (state.currentPhase === 'answer') {
-            startAnswerTimer();
-        }
+        if (state.currentPhase === 'question') { startQuestionTimer(); }
+        else if (state.currentPhase === 'answer') { startAnswerTimer(); }
     }
 
     function startQuestionTimer() {
@@ -1454,51 +1168,32 @@
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
 
-            // Auto-select answer if configured and no answer selected yet
             if (config.autoSelectOnTimeout && !state.isAnswerSelected) {
                 selectRandomAnswer();
-
-                // After auto-selecting, wait a bit then click check button
                 playNotificationSound();
                 const checkTimeoutId = registerTimeout(setTimeout(() => {
                     const btn = getCheckBtn();
                     if (btn) {
-                        console.log('[Auto-Advance] Auto-clicking check button after random selection');
                         btn.click();
-
-                        // Switch to answer phase
                         clearTimer();
                         const phaseTimeoutId = registerTimeout(setTimeout(() => {
                             state.currentPhase = 'answer';
-                            if (config.autoAdvanceEnabled) {
-                                startAnswerTimer();
-                            } else {
-                                hideTimer();
-                            }
+                            if (config.autoAdvanceEnabled) { startAnswerTimer(); } else { hideTimer(); }
                             cleanupRegistry.timeouts.delete(phaseTimeoutId);
                         }, 300));
                     }
                     cleanupRegistry.timeouts.delete(checkTimeoutId);
                 }, 500));
-            }
-            // If user already selected an answer manually, just click check button
-            else if (state.isAnswerSelected) {
+            } else if (state.isAnswerSelected) {
                 playNotificationSound();
                 const checkTimeoutId = registerTimeout(setTimeout(() => {
                     const btn = getCheckBtn();
                     if (btn) {
-                        console.log('[Auto-Advance] Auto-clicking check button after manual selection');
                         btn.click();
-
-                        // Switch to answer phase
                         clearTimer();
                         const phaseTimeoutId = registerTimeout(setTimeout(() => {
                             state.currentPhase = 'answer';
-                            if (config.autoAdvanceEnabled) {
-                                startAnswerTimer();
-                            } else {
-                                hideTimer();
-                            }
+                            if (config.autoAdvanceEnabled) { startAnswerTimer(); } else { hideTimer(); }
                             cleanupRegistry.timeouts.delete(phaseTimeoutId);
                         }, 300));
                     }
@@ -1518,20 +1213,13 @@
         const timerHandle = setTimeout(() => {
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
-
             playNotificationSound();
 
             const hideTimeoutId = registerTimeout(setTimeout(() => {
                 hideTimer();
-
                 const nextBtn = getNextBtn();
                 if (nextBtn) {
-                    const arrowRightEvent = new KeyboardEvent('keydown', {
-                        key: 'ArrowRight',
-                        code: 'ArrowRight',
-                        bubbles: true
-                    });
-                    document.dispatchEvent(arrowRightEvent);
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
                 }
                 cleanupRegistry.timeouts.delete(hideTimeoutId);
             }, 800));
@@ -1544,31 +1232,21 @@
 
     function selectRandomAnswer() {
         const answerButtons = getAnswerButtons();
-
         if (answerButtons.length > 0) {
-            const randomIndex = Math.floor(Math.random() * answerButtons.length);
-            const selectedButton = answerButtons[randomIndex];
-            selectedButton.click();
-
+            answerButtons[Math.floor(Math.random() * answerButtons.length)].click();
             state.isAnswerSelected = true;
             return;
         }
-
         const options = ['1', '2', '3', '4', '5'];
-        const randomOption = options[Math.floor(Math.random() * options.length)];
-
-        const keyEvent = new KeyboardEvent('keydown', {
-            key: randomOption,
-            code: `Digit${randomOption}`,
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+            key: options[Math.floor(Math.random() * options.length)],
             bubbles: true
-        });
-        document.dispatchEvent(keyEvent);
-
+        }));
         state.isAnswerSelected = true;
     }
 
     // ============================================================================
-    // QUESTION DETECTION WITH DEBOUNCING
+    // QUESTION DETECTION
     // ============================================================================
 
     function onQuestionLoad() {
@@ -1578,20 +1256,13 @@
         }
 
         const debounceId = setTimeout(() => {
-            if (state.isProcessingNewQuestion) {
-                console.log('[Auto-Advance] Question load already in progress, skipping...');
-                return;
-            }
-
+            if (state.isProcessingNewQuestion) { return; }
             state.isProcessingNewQuestion = true;
 
             try {
                 const currentQuestion = getQuestionText();
-
                 const shouldForceTimerStart = state.manuallyNavigated;
-                if (state.manuallyNavigated) {
-                    state.manuallyNavigated = false;
-                }
+                if (state.manuallyNavigated) state.manuallyNavigated = false;
 
                 if (currentQuestion && (currentQuestion !== state.lastQuestionText || shouldForceTimerStart)) {
                     console.log('[Auto-Advance] New question detected');
@@ -1600,12 +1271,7 @@
                     state.isAnswerSelected = false;
                     state.spacePressed = false;
                     state.answerSelectedAfterSpace = false;
-
-                    if (config.autoAdvanceEnabled) {
-                        startTimer();
-                    } else {
-                        hideTimer();
-                    }
+                    if (config.autoAdvanceEnabled) { startTimer(); } else { hideTimer(); }
                 }
             } catch (error) {
                 console.error('[Auto-Advance] Error in onQuestionLoad:', error);
@@ -1647,7 +1313,35 @@
             }
         }
 
-        if (key === '0' || (key === 'd' && e.shiftKey)) {
+        // ── v8.3 FIX #2 ─────────────────────────────────────────────────────
+        // Pressing 0 no longer immediately navigates to the dashboard.
+        // First press shows a confirmation toast; second press within 2s confirms.
+        // The state resets automatically after 2s if not confirmed.
+        // Shift+D retains the old instant-navigate behaviour (deliberate keycombo).
+        // ────────────────────────────────────────────────────────────────────
+        if (key === '0') {
+            if (state.dashboardConfirmPending) {
+                // Second press — confirmed, navigate now
+                clearTimeout(state.dashboardConfirmTimeout);
+                state.dashboardConfirmPending = false;
+                state.dashboardConfirmTimeout = null;
+                window.location.href = 'https://www.e-qe.online/dashboard';
+            } else {
+                // First press — ask for confirmation
+                state.dashboardConfirmPending = true;
+                showToast('🏠 Press 0 again to go to Dashboard', 'warning');
+                state.dashboardConfirmTimeout = setTimeout(() => {
+                    state.dashboardConfirmPending = false;
+                    state.dashboardConfirmTimeout = null;
+                }, 2000);
+            }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
+        if (key === 'd' && e.shiftKey) {
+            // Shift+D: instant navigate (deliberate combo, no confirmation needed)
             window.location.href = 'https://www.e-qe.online/dashboard';
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -1663,24 +1357,12 @@
 
         if (key === '7') {
             const btnToggle = document.getElementById('eqe-btn-toggle');
-            if (btnToggle) {
-                toggleAutoAdvance(btnToggle);
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
+            if (btnToggle) { toggleAutoAdvance(btnToggle); e.preventDefault(); e.stopImmediatePropagation(); }
             return;
         }
 
         if (key === '8') {
             cyclePreset();
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            return;
-        }
-
-        if (key === 'p' && !e.shiftKey) {
-            const btnMusic = document.getElementById('eqe-btn-music');
-            toggleMusic(btnMusic);
             e.preventDefault();
             e.stopImmediatePropagation();
             return;
@@ -1710,7 +1392,6 @@
                 e.stopImmediatePropagation();
                 return;
             }
-
             if (!state.tKeyPressTimer) {
                 state.tKeyPressTimer = registerTimeout(setTimeout(() => {
                     showPresetTable();
@@ -1729,46 +1410,28 @@
 
         if (key === 'c') {
             const cBtn = getCGroupBtn();
-            if (cBtn) {
-                cBtn.click();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
+            if (cBtn) { cBtn.click(); e.preventDefault(); e.stopImmediatePropagation(); }
             return;
         }
 
         if (key === 'a' && e.shiftKey) {
             const btnToggle = document.getElementById('eqe-btn-toggle');
-            if (btnToggle) {
-                toggleAutoAdvance(btnToggle);
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
+            if (btnToggle) { toggleAutoAdvance(btnToggle); e.preventDefault(); e.stopImmediatePropagation(); }
             return;
         }
 
         if (key === 'a' && !e.shiftKey) {
             const aBtn = getExplainBtn();
-            if (aBtn) {
-                aBtn.click();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
+            if (aBtn) { aBtn.click(); e.preventDefault(); e.stopImmediatePropagation(); }
             return;
         }
 
-        // Handle 'i' key for View Image button
         if (key === 'i') {
             const imageBtn = getViewImageBtn();
-            if (imageBtn) {
-                imageBtn.click();
-                e.preventDefault();
-                e.stopImmediatePropagation();
-            }
+            if (imageBtn) { imageBtn.click(); e.preventDefault(); e.stopImmediatePropagation(); }
             return;
         }
 
-        // Handle 'h' key for toggling sidebar
         if (key === 'h') {
             toggleSidebar();
             e.preventDefault();
@@ -1776,7 +1439,6 @@
             return;
         }
 
-        // Handle Shift + ? for shortcuts help
         if (key === '?' || (e.key === '?' && e.shiftKey)) {
             showShortcutsHelp();
             e.preventDefault();
@@ -1786,7 +1448,6 @@
 
         if (['1', '2', '3', '4', '5'].includes(key)) {
             state.isAnswerSelected = true;
-
             if (state.spacePressed && !state.answerSelectedAfterSpace) {
                 state.answerSelectedAfterSpace = true;
             }
@@ -1800,36 +1461,24 @@
 
                 if (!state.spacePressed) {
                     state.spacePressed = true;
-
-                    if (!state.isAnswerSelected) {
-                        return;
-                    } else {
+                    if (!state.isAnswerSelected) { return; }
+                    else {
                         btn.click();
-
                         clearTimer();
                         const phaseTimeoutId = registerTimeout(setTimeout(() => {
                             state.currentPhase = 'answer';
-                            if (config.autoAdvanceEnabled) {
-                                startAnswerTimer();
-                            } else {
-                                hideTimer();
-                            }
+                            if (config.autoAdvanceEnabled) { startAnswerTimer(); } else { hideTimer(); }
                             cleanupRegistry.timeouts.delete(phaseTimeoutId);
                         }, 300));
                     }
                 } else if (state.answerSelectedAfterSpace) {
                     btn.click();
-
                     clearTimer();
                     const phaseTimeoutId = registerTimeout(setTimeout(() => {
                         state.currentPhase = 'answer';
                         state.spacePressed = false;
                         state.answerSelectedAfterSpace = false;
-                        if (config.autoAdvanceEnabled) {
-                            startAnswerTimer();
-                        } else {
-                            hideTimer();
-                        }
+                        if (config.autoAdvanceEnabled) { startAnswerTimer(); } else { hideTimer(); }
                         cleanupRegistry.timeouts.delete(phaseTimeoutId);
                     }, 300));
                 } else {
@@ -1846,7 +1495,6 @@
 
         clearTimer();
         stopCountdown();
-
         state.manuallyNavigated = true;
 
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
@@ -1874,9 +1522,7 @@
                 cleanupRegistry.timeouts.delete(state.tKeyPressTimer);
                 state.tKeyPressTimer = null;
             }
-            if (!state.tKeyLongPressed && !e.shiftKey) {
-                cyclePreset();
-            }
+            if (!state.tKeyLongPressed && !e.shiftKey) cyclePreset();
             state.tKeyLongPressed = false;
         }
     }
@@ -1886,7 +1532,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v8.0 with Background Music...');
+        console.log('[Auto-Advance] Initializing v8.3...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();
@@ -1900,36 +1546,14 @@
 
         injectInlineControls();
 
-        // Apply saved sidebar state
         if (config.sidebarHidden) {
             const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
-            if (sidebar) {
-                sidebar.style.display = 'none';
-            }
-        }
-
-        // Music Persistence (requires user interaction to play)
-        if (config.musicEnabled) {
-            const playMusicOnFirstInteraction = () => {
-                const audio = getAudio();
-                audio.play().then(() => {
-                    console.log('[Auto-Advance] Background music resumed');
-                    const btnMusic = document.getElementById('eqe-btn-music');
-                    if (btnMusic) btnMusic.innerHTML = '🔊';
-                }).catch(() => {
-                    // Still blocked or failed
-                });
-                document.removeEventListener('click', playMusicOnFirstInteraction);
-                document.removeEventListener('keydown', playMusicOnFirstInteraction);
-            };
-            document.addEventListener('click', playMusicOnFirstInteraction);
-            document.addEventListener('keydown', playMusicOnFirstInteraction);
+            if (sidebar) sidebar.style.display = 'none';
         }
 
         registerEventListener(document, 'keydown', handleKeydown, true);
         registerEventListener(document, 'keyup', handleKeyup, true);
 
-        // Dashboard Scanning
         if (window.location.href.includes('/dashboard')) {
             scanAndSaveCourses();
             decorateDashboardModules();
@@ -1937,23 +1561,14 @@
 
         const initTimeoutId = registerTimeout(setTimeout(() => {
             state.lastQuestionText = getQuestionText();
-            if (config.autoAdvanceEnabled) {
-                onQuestionLoad();
-            }
+            if (config.autoAdvanceEnabled) onQuestionLoad();
 
-            // Current Course Notification on Lesson/Exam Page
             if (window.location.href.includes('/lesson/') || window.location.href.includes('/exam/')) {
                 const courses = GM_getValue('saved_courses', []);
                 const currentId = window.location.href.split('/').pop();
                 const currentCourse = courses.find(c => c.id === currentId);
                 if (currentCourse) {
-                    showHUDToast({
-                        emoji: '📍',
-                        name: 'Current Course',
-                        q: '-',
-                        a: '-',
-                        desc: currentCourse.name
-                    });
+                    showHUDToast({ emoji: '📍', name: 'Current Course', q: '-', a: '-', desc: currentCourse.name });
                 }
             }
 
@@ -1961,10 +1576,8 @@
         }, 500));
     }
 
-    const observer = new MutationObserver((mutations) => {
-        if (!document.getElementById('eqe-inline-container')) {
-            injectInlineControls();
-        }
+    const observer = new MutationObserver(() => {
+        if (!document.getElementById('eqe-inline-container')) injectInlineControls();
         if (window.location.href !== state.lastUrl) {
             state.lastUrl = window.location.href;
             injectInlineControls();
@@ -1976,7 +1589,6 @@
     });
 
     registerObserver(observer);
-
     registerEventListener(window, 'beforeunload', cleanup, false);
     registerEventListener(window, 'pagehide', cleanup, false);
 
@@ -1990,6 +1602,7 @@
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    const fallbackInitTimeoutId = registerTimeout(setTimeout(init, 1000));
-    cleanupRegistry.timeouts.delete(fallbackInitTimeoutId);
+    // NOTE: fallback init — removed the immediate .delete() that was cancelling
+    // cleanup registration in v8.2 (bug fix).
+    registerTimeout(setTimeout(init, 1000));
 })();

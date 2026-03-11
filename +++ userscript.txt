@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.4
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX (Esc to close) • New shortcuts (0,6,7,8,9) • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Dashboard nav confirmation • Settings closes on outside click • Pomotroid donut session timer
+// @version      8.5
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Pomotroid donut session timer (P) • Custom session duration in settings
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -61,15 +61,18 @@
     };
 
     // ============================================================================
-    // POMOTROID SESSION TIMER STATE  (v8.4)
+    // POMOTROID SESSION TIMER STATE  (v8.4 → v8.5)
     // ============================================================================
 
-    const POMO_TOTAL_SECONDS = 40 * 60; // 40 minutes
+    // Custom duration persisted in GM storage (default 0h 40min)
+    let POMO_HOURS   = GM_getValue('pomoHours',   0);
+    let POMO_MINUTES = GM_getValue('pomoMinutes', 40);
+    let POMO_TOTAL_SECONDS = (POMO_HOURS * 60 + POMO_MINUTES) * 60;
 
     const pomoState = {
-        running: false,
+        running:   false,
         remaining: POMO_TOTAL_SECONDS,
-        interval: null
+        interval:  null
     };
 
     const cleanupRegistry = {
@@ -653,6 +656,7 @@
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('H')} : Toggle Sidebar Visibility</li>
                     <li>${kbd('I')} : View Image</li>
+                    <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
@@ -705,41 +709,68 @@
     }
 
     // ============================================================================
-    // POMOTROID SESSION TIMER BUTTON  (v8.4)
-    // ── Pomotroid-style SVG donut button. 40 min default. Click to start/pause.
-    // ── The ring drains smoothly each second. Text shows minutes remaining.
-    // ── When time is up: ring flashes red briefly then resets.
+    // POMOTROID SESSION TIMER BUTTON  (v8.5)
+    // ── Gray ring when inactive, purple when active.
+    // ── Text = total minutes remaining (hours converted: 90 min shows "90").
+    // ── Font-size scales: 1-digit→9.5px, 2-digit→9px, 3-digit→7px.
+    // ── HUD toast on start. Shortcut: P.
+    // ── Custom duration editable in Settings (h + min inputs).
     // ============================================================================
 
-    function createPomotroidBtn(buttonStyleClass) {
-        // The SVG uses the circumference=100 trick:
-        // radius = 15.9155  →  C = 2π·r ≈ 100
-        // stroke-dashoffset = 100 − percentageLeft  maps 1:1 with time left
+    const POMO_COLOR_INACTIVE = 'rgba(255,255,255,0.30)'; // gray ring when paused/idle
+    const POMO_COLOR_ACTIVE   = '#a855f7';                 // purple when running
+    const POMO_COLOR_WARN     = '#f59e0b';                 // amber <20%
+    const POMO_COLOR_DONE     = '#10b981';                 // green flash on finish
+
+    function pomoTotalSeconds() {
+        return (POMO_HOURS * 60 + POMO_MINUTES) * 60;
+    }
+
+    /** Minutes left as a display string — always in minutes (e.g. 90 for 1h30m) */
+    function pomoDisplayText() {
+        const minsLeft = Math.ceil(pomoState.remaining / 60);
+        return minsLeft > 0 ? String(minsLeft) : '0';
+    }
+
+    /** Font-size for the SVG text based on digit count */
+    function pomoFontSize(text) {
+        if (text.length >= 3) return '6.8';
+        if (text.length === 2) return '8.8';
+        return '10';
+    }
+
+    function createPomotroidBtn() {
         const btn = document.createElement('button');
         btn.id = 'eqe-btn-pomo';
-        btn.title = 'Session Timer — click to start/pause (40 min)';
-        btn.style.cssText = 'background:none;border:none;padding:0;cursor:pointer;width:36px;height:36px;position:relative;flex-shrink:0;';
+        btn.title = 'Session Timer — click or press P to start (0h 40min)';
+        btn.style.cssText = [
+            'background:none;border:none;padding:0;cursor:pointer;',
+            'width:36px;height:36px;position:relative;flex-shrink:0;'
+        ].join('');
 
         btn.innerHTML = `
-            <svg id="eqe-pomo-svg" viewBox="0 0 36 36"
-                 style="width:100%;height:100%;transform:rotate(-90deg);display:block;">
-                <!-- track -->
-                <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="3.5"
-                    d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
-                <!-- progress ring -->
-                <path id="eqe-pomo-ring" fill="none"
-                    stroke="#ff4e4d" stroke-width="3.5" stroke-linecap="round"
-                    stroke-dasharray="100,100" stroke-dashoffset="0"
-                    style="transition:stroke-dashoffset 1s linear,stroke 0.3s;"
-                    d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
-                <!-- label — counter-rotated so it reads upright -->
-                <text id="eqe-pomo-text" x="18" y="18"
-                    fill="#ffffff" font-size="9.5" font-weight="700"
-                    text-anchor="middle" dominant-baseline="central"
-                    style="transform:rotate(90deg);transform-origin:50% 50%;font-family:-apple-system,sans-serif;">
-                    40
-                </text>
-            </svg>`;
+<svg id="eqe-pomo-svg" viewBox="0 0 36 36"
+     style="width:100%;height:100%;transform:rotate(-90deg);display:block;overflow:visible;">
+  <!-- track -->
+  <path fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="3.8"
+        d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
+  <!-- progress ring -->
+  <path id="eqe-pomo-ring" fill="none"
+        stroke="${POMO_COLOR_INACTIVE}" stroke-width="3.8" stroke-linecap="round"
+        stroke-dasharray="100,100" stroke-dashoffset="0"
+        style="transition:stroke-dashoffset 1s linear,stroke 0.4s ease;"
+        d="M18 2.0845 a15.9155 15.9155 0 0 1 0 31.831 a15.9155 15.9155 0 0 1 0 -31.831"/>
+  <!-- label — counter-rotated so it reads upright -->
+  <text id="eqe-pomo-text" x="18" y="18"
+        fill="rgba(255,255,255,0.55)"
+        font-size="10" font-weight="700"
+        text-anchor="middle" dominant-baseline="central"
+        style="transform:rotate(90deg);transform-origin:50% 50%;
+               font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+               transition:fill 0.4s ease;">
+    ${pomoDisplayText()}
+  </text>
+</svg>`;
 
         btn.addEventListener('click', togglePomotroid);
         return btn;
@@ -752,17 +783,24 @@
             clearInterval(pomoState.interval);
             pomoState.interval = null;
             updatePomotroidVisuals();
+            showToast('⏸️ Session timer paused', 'info');
         } else {
             // Start / resume
             if (pomoState.remaining <= 0) {
-                // Reset before starting
-                pomoState.remaining = POMO_TOTAL_SECONDS;
+                pomoState.remaining = pomoTotalSeconds();
             }
             pomoState.running = true;
+
+            // HUD toast on start — same style as loadout notification
+            const totalMins = POMO_HOURS * 60 + POMO_MINUTES;
+            const label = POMO_HOURS > 0
+                ? `${POMO_HOURS}h ${POMO_MINUTES}min`
+                : `${POMO_MINUTES}min`;
+            showHUDToast({ emoji: '🍅', name: 'Session', q: totalMins, a: '-', desc: `${label} timer started` });
+
             pomoState.interval = setInterval(() => {
                 pomoState.remaining--;
                 updatePomotroidVisuals();
-
                 if (pomoState.remaining <= 0) {
                     clearInterval(pomoState.interval);
                     pomoState.interval = null;
@@ -776,53 +814,74 @@
 
     function updatePomotroidVisuals() {
         const ring = document.getElementById('eqe-pomo-ring');
-        const text = document.getElementById('eqe-pomo-text');
-        if (!ring || !text) return;
+        const textEl = document.getElementById('eqe-pomo-text');
+        if (!ring || !textEl) return;
 
-        const pct = Math.max(0, (pomoState.remaining / POMO_TOTAL_SECONDS) * 100);
-        ring.style.strokeDashoffset = (100 - pct).toFixed(2);
+        const total = pomoTotalSeconds();
+        const pct   = total > 0 ? Math.max(0, (pomoState.remaining / total) * 100) : 0;
+        ring.style.strokeDashoffset = (100 - pct).toFixed(3);
 
-        // Text: ceil so 39m55s still shows 40 until it crosses the minute boundary
-        const minsLeft = Math.ceil(pomoState.remaining / 60);
-        text.textContent = minsLeft > 0 ? minsLeft : '0';
+        const displayText = pomoDisplayText();
+        textEl.textContent = displayText;
+        textEl.setAttribute('font-size', pomoFontSize(displayText));
 
-        // Colour shifts: green > 50%, amber 20-50%, red <20%
         if (!pomoState.running) {
-            ring.style.stroke = 'rgba(255,255,255,0.45)'; // paused — greyed
-        } else if (pct > 50) {
-            ring.style.stroke = '#ff4e4d'; // Pomotroid coral
-        } else if (pct > 20) {
-            ring.style.stroke = '#f59e0b'; // amber warning
+            // Inactive: muted gray ring, dim text
+            ring.style.stroke  = POMO_COLOR_INACTIVE;
+            textEl.setAttribute('fill', 'rgba(255,255,255,0.45)');
         } else {
-            ring.style.stroke = '#ef4444'; // urgent red
+            // Active: purple ring + bright text; amber/red at low time
+            textEl.setAttribute('fill', '#ffffff');
+            if (pct > 20) {
+                ring.style.stroke = POMO_COLOR_ACTIVE;
+            } else {
+                ring.style.stroke = POMO_COLOR_WARN;
+            }
         }
 
-        // Update button tooltip
+        // Tooltip with exact MM:SS
         const btn = document.getElementById('eqe-btn-pomo');
         if (btn) {
             const m = Math.floor(pomoState.remaining / 60);
-            const s = (pomoState.remaining % 60).toString().padStart(2, '0');
-            btn.title = pomoState.running
-                ? `Session Timer — ${m}:${s} left (click to pause)`
-                : `Session Timer — ${m}:${s} left (click to resume)`;
+            const s = String(pomoState.remaining % 60).padStart(2, '0');
+            const state = pomoState.running ? 'click to pause' : 'click to start';
+            btn.title = `Session Timer — ${m}:${s} left (${state})`;
         }
     }
 
     function onPomotroidFinished() {
-        const ring = document.getElementById('eqe-pomo-ring');
-        const text = document.getElementById('eqe-pomo-text');
-        if (ring) ring.style.stroke = '#10b981'; // brief green flash on finish
-        if (text) text.textContent = '✓';
+        const ring   = document.getElementById('eqe-pomo-ring');
+        const textEl = document.getElementById('eqe-pomo-text');
+        if (ring)   { ring.style.stroke = POMO_COLOR_DONE; ring.style.strokeDashoffset = '100'; }
+        if (textEl) { textEl.textContent = '✓'; textEl.setAttribute('font-size', '10'); textEl.setAttribute('fill', POMO_COLOR_DONE); }
 
         playNotificationSound();
         showToast('🍅 Session complete! Take a break.', 'success');
 
-        // Reset visuals after 3 s
+        // Reset after 3 s
         setTimeout(() => {
-            pomoState.remaining = POMO_TOTAL_SECONDS;
+            pomoState.remaining = pomoTotalSeconds();
             updatePomotroidVisuals();
-            if (text) text.textContent = '40';
         }, 3000);
+    }
+
+    /** Called from Settings save — updates duration and resets if not running */
+    function applyPomoDuration(hours, minutes) {
+        POMO_HOURS   = hours;
+        POMO_MINUTES = minutes;
+        GM_setValue('pomoHours',   hours);
+        GM_setValue('pomoMinutes', minutes);
+
+        if (!pomoState.running) {
+            pomoState.remaining = pomoTotalSeconds();
+            updatePomotroidVisuals();
+        }
+
+        const btn = document.getElementById('eqe-btn-pomo');
+        if (btn) {
+            const label = hours > 0 ? `${hours}h ${minutes}min` : `${minutes}min`;
+            btn.title = `Session Timer — ${label} (click or P to start)`;
+        }
     }
 
     // ============================================================================
@@ -924,8 +983,8 @@
             btnGear.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
             btnGear.onclick = () => toggleSettings();
 
-            // v8.4 — Pomotroid session timer button
-            const btnPomo = createPomotroidBtn(buttonStyleClass);
+            // v8.4/v8.5 — Pomotroid session timer button
+            const btnPomo = createPomotroidBtn();
 
             container.appendChild(btnLoadout);
             container.appendChild(btnCourse);
@@ -1138,6 +1197,23 @@
                 <small style="color: ${colors.smallColor}; margin-left: 28px; display: block; margin-top: 4px;">Randomly select answer when question timer expires</small>
             </div>
 
+            <div style="margin-bottom: 15px; padding-top: 15px; border-top: 1px solid ${colors.borderTop};">
+                <label style="display: block; margin-bottom: 8px; color: ${colors.labelColor}; font-size: 14px; font-weight: 600;">
+                    🍅 Session Timer Duration:
+                </label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="number" id="eqe-pomo-hours" value="${POMO_HOURS}"
+                           min="0" max="23"
+                           style="width: 64px; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color}; text-align: center;">
+                    <span style="color: ${colors.labelColor}; font-size: 14px; font-weight: 600;">h</span>
+                    <input type="number" id="eqe-pomo-minutes" value="${POMO_MINUTES}"
+                           min="0" max="59"
+                           style="width: 64px; padding: 8px; border: 1px solid ${colors.inputBorder}; border-radius: 6px; font-size: 14px; background-color: ${colors.panelBg}; color: ${colors.h3Color}; text-align: center;">
+                    <span style="color: ${colors.labelColor}; font-size: 14px; font-weight: 600;">min</span>
+                </div>
+                <small style="color: ${colors.smallColor}; margin-top: 4px; display: block;">Default: 0h 40min · resets idle timer on save</small>
+            </div>
+
             <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button id="eqe-save-settings" style="flex: 1; padding: 10px; background: ${colors.saveBtnBg}; color: ${colors.saveBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Save</button>
                 <button id="eqe-close-settings" style="flex: 1; padding: 10px; background: ${colors.closeBtnBg}; color: ${colors.closeBtnText}; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Close</button>
@@ -1185,12 +1261,20 @@
         const autoAdvanceEnabled = document.getElementById('eqe-enable-autoadvance').checked;
         const autoSelectOnTimeout = document.getElementById('eqe-auto-select').checked;
 
+        // Pomo duration
+        const pomoHours   = Math.max(0, Math.min(23, parseInt(document.getElementById('eqe-pomo-hours').value)   || 0));
+        const pomoMinutes = Math.max(0, Math.min(59, parseInt(document.getElementById('eqe-pomo-minutes').value) || 0));
+
         if (isNaN(questionTimer) || questionTimer < 1 || questionTimer > 300) {
             showToast('⚠️ Question timer must be between 1-300 seconds', 'warning');
             return;
         }
         if (isNaN(answerTimer) || answerTimer < 1 || answerTimer > 300) {
             showToast('⚠️ Answer timer must be between 1-300 seconds', 'warning');
+            return;
+        }
+        if (pomoHours === 0 && pomoMinutes === 0) {
+            showToast('⚠️ Session timer must be at least 1 minute', 'warning');
             return;
         }
 
@@ -1207,6 +1291,9 @@
 
         showToast('✓ Settings saved successfully!', 'success');
         toggleSettings();
+
+        // Apply new pomo duration (resets idle timer)
+        applyPomoDuration(pomoHours, pomoMinutes);
 
         const btnToggle = document.getElementById('eqe-btn-toggle');
         if (btnToggle) {
@@ -1569,6 +1656,13 @@
             return;
         }
 
+        if (key === 'p') {
+            togglePomotroid();
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
+
         if (key === 'h') {
             toggleSidebar();
             e.preventDefault();
@@ -1669,7 +1763,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v8.4...');
+        console.log('[Auto-Advance] Initializing v8.5...');
 
         if (!document.getElementById('eqe-auto-advance-settings')) {
             const settings = createSettingsPanel();

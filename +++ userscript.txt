@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.6
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Pomotroid donut session timer (P) • Custom session duration in settings • Page-glow break reminder on session end
+// @version      8.7
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Pomotroid donut session timer (P) • Custom session duration in settings • Page-glow break reminder on session end • F → fullscreen (FF to exit)
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -56,7 +56,10 @@
         tKeyPressTimer: null,
         tKeyLongPressed: false,
         dashboardConfirmPending: false,
-        dashboardConfirmTimeout: null
+        dashboardConfirmTimeout: null,
+        // v8.7 — fullscreen exit confirmation (FF to exit, single F to enter)
+        fullscreenExitPending: false,
+        fullscreenExitTimeout: null
     };
 
     // ============================================================================
@@ -545,6 +548,7 @@
                 <h4 style="font-size: 16px; margin-bottom: 10px; color: #3b82f6;">Script Features</h4>
                 <ul style="list-style: none; padding: 0; margin: 0; line-height: 1.8;">
                     <li>${kbd('H')} : Toggle Sidebar Visibility</li>
+                    <li>${kbd('F')} : Enter Fullscreen <em style="font-size:11px;opacity:0.7;">(press F twice to exit)</em></li>
                     <li>${kbd('I')} : View Image</li>
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
@@ -878,6 +882,65 @@
             btn.title = `Session Timer — ${label} (click or P to start)`;
         }
     }
+
+    // ============================================================================
+    // FULLSCREEN TOGGLE  (v8.7)
+    // ── Single F  → enter fullscreen + HUD toast "ON"
+    // ── Double F  → exit fullscreen  + HUD toast "OFF"  (like 0→dashboard)
+    // ── Browser ESC natively exits fullscreen; state is synced via the
+    //    fullscreenchange event so the confirmation guard stays accurate.
+    // ============================================================================
+
+    function isFullscreen() {
+        return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+                  document.mozFullScreenElement || document.msFullscreenElement);
+    }
+
+    function enterFullscreen() {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen ||
+                    el.mozRequestFullScreen || el.msRequestFullscreen;
+        if (req) {
+            req.call(el).catch(() => {});
+        }
+        showHUDToast({ emoji: '⛶', name: 'Fullscreen', q: '-', a: '-', desc: 'Toggle full-screen mode : ON' });
+    }
+
+    function exitFullscreen() {
+        const ex = document.exitFullscreen || document.webkitExitFullscreen ||
+                   document.mozCancelFullScreen || document.msExitFullscreen;
+        if (ex) ex.call(document).catch(() => {});
+        showHUDToast({ emoji: '⛶', name: 'Fullscreen', q: '-', a: '-', desc: 'Toggle full-screen mode : OFF' });
+    }
+
+    function handleFullscreenKey() {
+        if (!isFullscreen()) {
+            // Not in fullscreen → single F enters it
+            state.fullscreenExitPending = false;
+            clearTimeout(state.fullscreenExitTimeout);
+            enterFullscreen();
+        } else {
+            // Already fullscreen → require double-F to exit
+            if (state.fullscreenExitPending) {
+                clearTimeout(state.fullscreenExitTimeout);
+                state.fullscreenExitPending = false;
+                state.fullscreenExitTimeout = null;
+                exitFullscreen();
+            } else {
+                state.fullscreenExitPending = true;
+                showToast('⛶ Press F again to exit fullscreen', 'warning');
+                state.fullscreenExitTimeout = setTimeout(() => {
+                    state.fullscreenExitPending = false;
+                    state.fullscreenExitTimeout = null;
+                }, 2000);
+            }
+        }
+    }
+
+    // Sync guard if user exits fullscreen via browser ESC
+    document.addEventListener('fullscreenchange',       () => { if (!isFullscreen()) { state.fullscreenExitPending = false; clearTimeout(state.fullscreenExitTimeout); } });
+    document.addEventListener('webkitfullscreenchange', () => { if (!isFullscreen()) { state.fullscreenExitPending = false; clearTimeout(state.fullscreenExitTimeout); } });
+    document.addEventListener('mozfullscreenchange',    () => { if (!isFullscreen()) { state.fullscreenExitPending = false; clearTimeout(state.fullscreenExitTimeout); } });
 
     // ============================================================================
     // INLINE CONTROLS UI
@@ -1456,6 +1519,7 @@
         if (key === 'i') { const imageBtn = getViewImageBtn(); if (imageBtn) { imageBtn.click(); e.preventDefault(); e.stopImmediatePropagation(); } return; }
         if (key === 'p') { togglePomotroid(); e.preventDefault(); e.stopImmediatePropagation(); return; }
         if (key === 'h') { toggleSidebar(); e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if (key === 'f') { handleFullscreenKey(); e.preventDefault(); e.stopImmediatePropagation(); return; }
         if (key === '?' || (e.key === '?' && e.shiftKey)) { showShortcutsHelp(); e.preventDefault(); e.stopImmediatePropagation(); return; }
 
         if (['1', '2', '3', '4', '5'].includes(key)) {
@@ -1524,7 +1588,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v8.6...');
+        console.log('[Auto-Advance] Initializing v8.7...');
         if (!document.getElementById('eqe-auto-advance-settings')) {
             document.body.appendChild(createSettingsPanel());
         }

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.7
-// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Pomotroid donut session timer (P) • Custom session duration in settings • Page-glow break reminder on session end • F → fullscreen (FF to exit)
+// @version      8.11
+// @description  ←→↑↓ navigation • T/8 to cycle loadouts • Space/Enter → check/submit • I → view image • H → toggle sidebar • Shift+? help • Inline auto-advance controls • HUD notifications • Improved UX • Course Quick-Switcher (M) • Dashboard Direct Navigation (1-9) • Pomotroid donut session timer (P) • Custom session duration in settings • Page-glow break reminder on session end • F → fullscreen (FF to exit) • Vanilla Answer button + Space/Enter always trigger answer-phase timer after mouse or keyboard selection
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -1456,6 +1456,115 @@
     }
 
     // ============================================================================
+    // ANSWER SELECTION TRACKING  (v8.11 — definitive fix)
+    //
+    // WHAT THE DEBUG LOG REVEALED:
+    // ─────────────────────────────
+    // • All prior selectors (select-none, border, p-3, shadow-md, cursor-pointer)
+    //   return 0 matches. Those classes do NOT exist on answer option elements.
+    //
+    // • The MutationObserver WAS reaching the correct elements (firstElementChild
+    //   text = "A"/"B"/etc.) but then rejected them because the guard checked for
+    //   `cursor-pointer` / `select-none` — classes that aren't there. So the flag
+    //   was never set for mouse clicks.
+    //
+    // ACTUAL DOM STRUCTURE (from debug MUT logs):
+    // ─────────────────────────────────────────────
+    // Unselected:  ...bg-white dark:bg-zinc-950 border-zinc-200/80 dark:border-zinc-800/80
+    // Selected:    ...bg-white/15 border-white/25          ← this is the selection signal
+    // Post-reveal: ...bg-white/12 border-white/20
+    //
+    // The element being mutated has `firstElementChild.textContent` === "A"/"B"/etc.
+    // It does NOT have cursor-pointer or select-none.
+    //
+    // FIX:
+    // ─────
+    // • Observer: drop the wrong class guard; just check firstElementChild text
+    //   and whether `bg-white/15` was added (= user selected an option).
+    // • isDOMAnswerSelected(): iterate all divs, find ones with A/B/C/D/E child,
+    //   return true if any has bg-white/15 (selected) or bg-white/12 (revealed).
+    // ============================================================================
+
+    /**
+     * Returns true when the DOM shows at least one answer option is selected.
+     * Uses the actual classes observed in debug output, not assumed selectors.
+     */
+    function isDOMAnswerSelected() {
+        const divs = document.querySelectorAll('div');
+        for (const el of divs) {
+            const fc = el.firstElementChild;
+            if (!fc || !['A','B','C','D','E'].includes(fc.textContent?.trim())) continue;
+            // bg-white/15 = option selected by user (pre-reveal)
+            // bg-white/12 = post-reveal state (answer was already shown)
+            if (el.classList.contains('bg-white/15') || el.classList.contains('bg-white/12')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * MutationObserver that sets state.isAnswerSelected = true the moment any
+     * answer option gains the selection class (bg-white/15), for BOTH mouse and
+     * keyboard input. The guard is ONLY firstElementChild text ∈ {A,B,C,D,E}.
+     */
+    function setupAnswerSelectionObserver() {
+        const obs = new MutationObserver((mutations) => {
+            if (state.isAnswerSelected) return;
+            for (const mutation of mutations) {
+                if (mutation.type !== 'attributes' || mutation.attributeName !== 'class') continue;
+                const el = mutation.target;
+                if (!(el instanceof Element)) continue;
+                const fc = el.firstElementChild;
+                if (!fc || !['A','B','C','D','E'].includes(fc.textContent?.trim())) continue;
+                // bg-white/15 is the class the site adds when a user selects an option
+                if (el.classList.contains('bg-white/15')) {
+                    state.isAnswerSelected = true;
+                    return;
+                }
+            }
+        });
+        obs.observe(document.body, {
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class']
+        });
+        return obs;
+    }
+
+    /**
+     * Intercepts clicks on the vanilla Answer/Réponse button.
+     * Uses flag OR live DOM check so mouse-selected answers are always caught.
+     */
+    function onAnswerBtnClick(e) {
+        let target = e.target;
+        while (target && target !== document.body) {
+            if (target.tagName === 'BUTTON') {
+                const text = target.textContent?.trim().toLowerCase();
+                const hasCheckIcon = target.querySelector('svg.lucide-circle-check-big');
+                if ((text === 'answer' || text === 'réponse') && hasCheckIcon) {
+                    const answerChosen = state.isAnswerSelected || isDOMAnswerSelected();
+                    if (answerChosen && state.currentPhase === 'question') {
+                        state.isAnswerSelected = true;
+                        setTimeout(() => {
+                            clearTimer();
+                            state.currentPhase = 'answer';
+                            state.spacePressed = true;
+                            if (config.autoAdvanceEnabled) {
+                                startAnswerTimer();
+                            } else {
+                                hideTimer();
+                            }
+                        }, 300);
+                    }
+                    break;
+                }
+            }
+            target = target.parentElement;
+        }
+    }
+
+    // ============================================================================
     // KEYBOARD HANDLER
     // ============================================================================
 
@@ -1531,9 +1640,13 @@
             const btn = getCheckBtn();
             if (btn) {
                 e.preventDefault(); e.stopImmediatePropagation();
+
+                // v8.10: treat DOM-visible selection as equivalent to flag
+                const answerReady = state.isAnswerSelected || isDOMAnswerSelected();
+
                 if (!state.spacePressed) {
                     state.spacePressed = true;
-                    if (!state.isAnswerSelected) { return; }
+                    if (!answerReady) { return; }
                     else {
                         btn.click(); clearTimer();
                         const phaseTimeoutId = registerTimeout(setTimeout(() => {
@@ -1551,7 +1664,9 @@
                         if (config.autoAdvanceEnabled) { startAnswerTimer(); } else { hideTimer(); }
                         cleanupRegistry.timeouts.delete(phaseTimeoutId);
                     }, 300));
-                } else { btn.click(); }
+                } else {
+                    btn.click();
+                }
             }
             return;
         }
@@ -1588,7 +1703,7 @@
     // ============================================================================
 
     function init() {
-        console.log('[Auto-Advance] Initializing v8.7...');
+        console.log('[Auto-Advance] Initializing v8.11...');
         if (!document.getElementById('eqe-auto-advance-settings')) {
             document.body.appendChild(createSettingsPanel());
         }
@@ -1602,6 +1717,10 @@
         }
         registerEventListener(document, 'keydown', handleKeydown, true);
         registerEventListener(document, 'keyup', handleKeyup, true);
+        // v8.8 — catch direct clicks on the vanilla Answer/Réponse button
+        registerEventListener(document, 'click', onAnswerBtnClick, true);
+        // v8.10 — MutationObserver tracks answer option class changes (mouse + keyboard)
+        registerObserver(setupAnswerSelectionObserver());
         if (window.location.href.includes('/dashboard')) {
             scanAndSaveCourses();
             decorateDashboardModules();

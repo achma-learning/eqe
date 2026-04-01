@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.12
+// @version      8.14
 // @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P session timer • Shift+? help • Auto-advance HUD island • Course switcher (M) • Dashboard 1-9 nav • Pomo page-glow • Answer-phase timer on mouse/keyboard select
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -16,7 +16,7 @@
 (() => {
     'use strict';
 
-    // ── v8.12: prevent double-init (hot-reload / stale fallback timer) ──────────
+    // ── prevent double-init (hot-reload / stale fallback timer) ─────────────
     if (window.__eqeLoaded) return;
     window.__eqeLoaded = true;
 
@@ -63,8 +63,10 @@
         dashboardConfirmTimeout:  null,
         fullscreenExitPending:    false,
         fullscreenExitTimeout:    null,
-        // v8.12: MutationObserver debounce handle
-        observerDebounce:         null
+        observerDebounce:         null,
+        // v8.14: epoch counter — incremented on every clearTimer() so stale
+        //        nested callbacks become no-ops instead of firing on the wrong question
+        timerEpoch:               0
     };
 
     // ============================================================================
@@ -157,7 +159,6 @@
         });
     };
 
-    // v8.12: filter out transient UI headings ("Command Palette", etc.)
     const TRANSIENT_TEXTS = new Set(['command palette', 'command', 'search']);
     const getQuestionText = () => {
         const el = document.querySelector('h1, h2, [class*="question"]');
@@ -212,7 +213,6 @@
         return `bg-gradient-to-r from-[#D10074] to-[#6E2C6B] ${base}`;
     }
 
-    // v8.12: cache computed gradient — avoids repeated temp-DOM creation
     let _cachedGradient = null;
     function getDynamicGradient() {
         if (_cachedGradient) return _cachedGradient;
@@ -807,7 +807,6 @@
         if (checkbox) checkbox.checked = config.autoAdvanceEnabled;
     }
 
-    // v8.12: early-return if container already injected (avoid unnecessary teardown)
     function injectInlineControls() {
         if (document.getElementById('eqe-inline-container')) return;
         const exitBtn = [...document.querySelectorAll('button')].find(b => b.innerText.includes('Exit'));
@@ -1125,7 +1124,7 @@
     }
 
     // ============================================================================
-    // TIMER LOGIC
+    // TIMER LOGIC  (v8.14 — epoch-guarded to prevent stale-callback double-advance)
     // ============================================================================
 
     function clearTimer() {
@@ -1134,6 +1133,9 @@
             cleanupRegistry.timeouts.delete(state.timerHandle);
             state.timerHandle = null;
         }
+        // v8.14: bump epoch — any in-flight nested callbacks that captured the old
+        // epoch value will detect the mismatch and silently bail out.
+        state.timerEpoch++;
     }
 
     function startTimer() {
@@ -1143,16 +1145,26 @@
         else if (state.currentPhase === 'answer')   startAnswerTimer();
     }
 
+    // v8.14: every nested setTimeout captures `epoch` at creation and checks it
+    // before executing.  If the user navigated/answered manually in the meantime
+    // the epoch will have changed and the callback becomes a no-op.
     function startQuestionTimer() {
+        const epoch = state.timerEpoch;
         startCountdown(config.questionTimer);
         state.timerHandle = registerTimeout(setTimeout(() => {
+            if (state.timerEpoch !== epoch) return; // stale — user already acted
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
             const proceed = () => {
+                if (state.timerEpoch !== epoch) return; // stale guard
                 const btn = getCheckBtn();
                 if (btn) {
                     btn.click(); clearTimer();
+                    // clearTimer() bumped epoch again — capture new one for the
+                    // answer-phase transition
+                    const epoch2 = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
+                        if (state.timerEpoch !== epoch2) return;
                         state.currentPhase = 'answer';
                         if (config.autoAdvanceEnabled) startAnswerTimer(); else hideTimer();
                     }, 300));
@@ -1160,28 +1172,40 @@
             };
             if (config.autoSelectOnTimeout && !state.isAnswerSelected) {
                 selectRandomAnswer(); playNotificationSound();
-                registerTimeout(setTimeout(proceed, 500));
+                registerTimeout(setTimeout(() => {
+                    if (state.timerEpoch !== epoch) return;
+                    proceed();
+                }, 500));
             } else if (state.isAnswerSelected) {
                 playNotificationSound();
-                registerTimeout(setTimeout(proceed, 500));
+                registerTimeout(setTimeout(() => {
+                    if (state.timerEpoch !== epoch) return;
+                    proceed();
+                }, 500));
             }
         }, config.questionTimer * 1000));
     }
 
-    // v8.12: click Next directly — avoids re-entering handleKeydown via synthetic ArrowRight
     function startAnswerTimer() {
+        const epoch = state.timerEpoch;
         startCountdown(config.answerTimer);
         state.timerHandle = registerTimeout(setTimeout(() => {
+            if (state.timerEpoch !== epoch) return; // stale — user already navigated
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
             playNotificationSound();
             registerTimeout(setTimeout(() => {
+                if (state.timerEpoch !== epoch) return; // stale guard
                 hideTimer();
                 const nextBtn = getNextBtn();
                 if (nextBtn) {
                     state.manuallyNavigated = true;
                     nextBtn.click();
-                    registerTimeout(setTimeout(() => { state.lastQuestionText = null; onQuestionLoad(); }, 200));
+                    registerTimeout(setTimeout(() => {
+                        if (state.timerEpoch !== epoch) return;
+                        state.lastQuestionText = null;
+                        onQuestionLoad();
+                    }, 200));
                 }
             }, 800));
         }, config.answerTimer * 1000));
@@ -1233,7 +1257,7 @@
     }
 
     // ============================================================================
-    // ANSWER SELECTION TRACKING  (v8.11)
+    // ANSWER SELECTION TRACKING
     // ============================================================================
 
     function isDOMAnswerSelected() {
@@ -1261,6 +1285,9 @@
         return obs;
     }
 
+    // v8.14: epoch-guarded — the 300ms delayed startAnswerTimer call captures the
+    // epoch so that if the user arrow-navigates within that 300ms window the stale
+    // callback is discarded.
     function onAnswerBtnClick(e) {
         let target = e.target;
         while (target && target !== document.body) {
@@ -1271,7 +1298,9 @@
                     const answerChosen = state.isAnswerSelected || isDOMAnswerSelected();
                     if (answerChosen && state.currentPhase === 'question') {
                         state.isAnswerSelected = true;
+                        const epoch = state.timerEpoch;
                         setTimeout(() => {
+                            if (state.timerEpoch !== epoch) return; // stale
                             clearTimer();
                             state.currentPhase = 'answer';
                             state.spacePressed = true;
@@ -1286,11 +1315,7 @@
     }
 
     // ============================================================================
-    // VANILLA SITE NAV BUTTON INTERCEPT  (v8.12 — port of v8.7 fix)
-    // ── Clicking the site's own ◂ / ▸ arrows didn't reset phase/timer because
-    //    the script never observed those clicks.  We attach a one-time click
-    //    listener per button (guarded by data-eqe-nav-bound) that replicates
-    //    the same state-reset as keyboard arrow navigation.
+    // VANILLA SITE NAV BUTTON INTERCEPT
     // ============================================================================
 
     function attachVanillaNavListeners() {
@@ -1314,7 +1339,7 @@
     }
 
     // ============================================================================
-    // KEYBOARD HANDLER
+    // KEYBOARD HANDLER  (v8.14 — epoch-guarded delayed callbacks)
     // ============================================================================
 
     function handleKeydown(e) {
@@ -1395,13 +1420,19 @@
                     state.spacePressed = true;
                     if (!answerReady) return;
                     btn.click(); clearTimer();
+                    // v8.14: capture epoch AFTER clearTimer() so the callback
+                    // is tied to the new epoch
+                    const epoch = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
+                        if (state.timerEpoch !== epoch) return; // stale
                         state.currentPhase = 'answer';
                         if (config.autoAdvanceEnabled) startAnswerTimer(); else hideTimer();
                     }, 300));
                 } else if (state.answerSelectedAfterSpace) {
                     btn.click(); clearTimer();
+                    const epoch = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
+                        if (state.timerEpoch !== epoch) return; // stale
                         state.currentPhase             = 'answer';
                         state.spacePressed             = false;
                         state.answerSelectedAfterSpace = false;
@@ -1474,7 +1505,7 @@
         registerTimeout(setTimeout(() => {
             state.lastQuestionText = getQuestionText();
             if (config.autoAdvanceEnabled) onQuestionLoad();
-            attachVanillaNavListeners(); // v8.12: bind native arrow buttons after React renders them
+            attachVanillaNavListeners();
 
             if (window.location.href.includes('/lesson/') || window.location.href.includes('/exam/')) {
                 const courses  = GM_getValue('saved_courses', []);
@@ -1485,14 +1516,13 @@
         }, 500));
     }
 
-    // v8.12: debounced MutationObserver — at most one batch per 100 ms
     const observer = new MutationObserver(() => {
         if (state.observerDebounce) return;
         state.observerDebounce = setTimeout(() => {
             state.observerDebounce = null;
 
             if (!document.getElementById('eqe-inline-container')) injectInlineControls();
-            attachVanillaNavListeners(); // re-bind if React re-rendered the buttons
+            attachVanillaNavListeners();
 
             const currentUrl = window.location.href;
             if (currentUrl !== state.lastUrl) {
@@ -1519,6 +1549,4 @@
         init();
         observer.observe(document.body, { childList: true, subtree: true });
     }
-    // NOTE: no fallback setTimeout(init) — the __eqeLoaded guard makes it redundant
-    //       and it was the root cause of doubled event listeners in earlier versions.
 })();

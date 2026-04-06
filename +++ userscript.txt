@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.14
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P session timer • Shift+? help • Auto-advance HUD island • Course switcher (M) • Dashboard 1-9 nav • Pomo page-glow • Answer-phase timer on mouse/keyboard select
+// @version      8.15
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P session timer • Shift+? help • Auto-advance HUD island • Course switcher (M) • Dashboard 1-9 nav • Pomo page-glow • Updated DOM selectors for Tailwind v4
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -94,29 +94,19 @@
     // DOM SELECTORS
     // ============================================================================
 
-    const getNextBtn = () => {
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-            if (btn.querySelector('svg.lucide-chevron-right')) return btn;
-        }
-        for (const btn of buttons) {
-            const text = btn.textContent?.trim().toLowerCase();
-            if (text && (text.includes('next') || text.includes('suivant'))) return btn;
-        }
-        return document.querySelector('button[aria-label*="next" i], button[aria-label="Next question" i]');
-    };
+    const getNextBtn = () =>
+        document.querySelector('button[aria-label="Go to next question"]') ||
+        [...document.querySelectorAll('button')].find(b =>
+            b.querySelector('svg.lucide-triangle.rotate-90') ||
+            /next|suivant/i.test(b.textContent?.trim())
+        );
 
-    const getPrevBtn = () => {
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-            if (btn.querySelector('svg.lucide-chevron-left')) return btn;
-        }
-        for (const btn of buttons) {
-            const text = btn.textContent?.trim().toLowerCase();
-            if (text && (text.includes('previous') || text.includes('précédent') || text.includes('prev'))) return btn;
-        }
-        return document.querySelector('button[aria-label*="previous" i], button[aria-label="Previous question" i]');
-    };
+    const getPrevBtn = () =>
+        document.querySelector('button[aria-label="Go to previous question"]') ||
+        [...document.querySelectorAll('button')].find(b =>
+            b.querySelector('svg.lucide-triangle.-rotate-90') ||
+            /previous|précédent|prev/i.test(b.textContent?.trim())
+        );
 
     const getCheckBtn = () => {
         const buttons = [...document.querySelectorAll('button')];
@@ -152,10 +142,12 @@
     };
 
     const getAnswerButtons = () => {
-        const containers = document.querySelectorAll('div.select-none.border.p-3.shadow-md.cursor-pointer');
+        const containers = document.querySelectorAll(
+            'div.group.relative.w-full.overflow-hidden.rounded-2xl.border'
+        );
         return Array.from(containers).filter(c => {
-            const text = c.firstElementChild?.textContent?.trim();
-            return text && ['A', 'B', 'C', 'D', 'E'].includes(text);
+            const label = c.firstElementChild?.firstElementChild?.textContent?.trim();
+            return label && ['A', 'B', 'C', 'D', 'E'].includes(label);
         });
     };
 
@@ -1261,10 +1253,23 @@
     // ============================================================================
 
     function isDOMAnswerSelected() {
-        for (const el of document.querySelectorAll('div')) {
-            const fc = el.firstElementChild;
-            if (!fc || !['A','B','C','D','E'].includes(fc.textContent?.trim())) continue;
+        const badges = document.querySelectorAll(
+            'div.relative.z-10.flex.shrink-0.items-center.justify-center.rounded-xl.border'
+        );
+        for (const el of badges) {
+            const label = el.textContent?.trim();
+            if (!label || !['A','B','C','D','E'].includes(label)) continue;
             if (el.classList.contains('bg-white/15') || el.classList.contains('bg-white/12')) return true;
+        }
+        // Fallback: check answer containers for selection gradient
+        const containers = document.querySelectorAll(
+            'div.group.relative.w-full.overflow-hidden.rounded-2xl.border'
+        );
+        for (const c of containers) {
+            if (c.classList.contains('from-[#1068B9]') || c.classList.contains('bg-gradient-to-r')) {
+                const label = c.firstElementChild?.firstElementChild?.textContent?.trim();
+                if (label && ['A','B','C','D','E'].includes(label)) return true;
+            }
         }
         return false;
     }
@@ -1276,9 +1281,20 @@
                 if (mutation.type !== 'attributes' || mutation.attributeName !== 'class') continue;
                 const el = mutation.target;
                 if (!(el instanceof Element)) continue;
-                const fc = el.firstElementChild;
-                if (!fc || !['A','B','C','D','E'].includes(fc.textContent?.trim())) continue;
-                if (el.classList.contains('bg-white/15')) { state.isAnswerSelected = true; return; }
+                // Check label badge (direct text like A/B/C/D/E)
+                const label = el.textContent?.trim();
+                if (label && ['A','B','C','D','E'].includes(label) &&
+                    el.classList.contains('bg-white/15')) {
+                    state.isAnswerSelected = true; return;
+                }
+                // Check answer container for selection gradient
+                if (el.classList.contains('rounded-2xl') && el.classList.contains('border') &&
+                    el.classList.contains('from-[#1068B9]')) {
+                    const containerLabel = el.firstElementChild?.firstElementChild?.textContent?.trim();
+                    if (containerLabel && ['A','B','C','D','E'].includes(containerLabel)) {
+                        state.isAnswerSelected = true; return;
+                    }
+                }
             }
         });
         obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });

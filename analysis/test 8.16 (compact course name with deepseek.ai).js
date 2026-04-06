@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.20
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Preset island colors • Question counter • Auto-advance lesson/exam only • Timer bug fixes
+// @version      8.16
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P session timer • Shift+? help • Auto-advance HUD island • Course switcher (M) • Dashboard 1-9 nav • Pomo page-glow • Updated DOM selectors for Tailwind v4 • Course page: hide images + compact layout
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -25,9 +25,9 @@
     // ============================================================================
 
     const PRESETS = [
-        { id: 'goldilocks', emoji: '⭐', name: 'Default',  q: 24, a: 12, desc: 'Daily Training',   gradient: 'linear-gradient(135deg,#667eea 0%,#764ba2 100%)' },
-        { id: 'velocity',   emoji: '🏎️', name: 'Velocity', q: 15, a: 5,  desc: 'Finals crunch',    gradient: 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)' },
-        { id: 'exam',       emoji: '📝', name: 'Exam',     q: 40, a: 20, desc: 'Real exam mode 1h', gradient: 'linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%)' }
+        { id: 'goldilocks', emoji: '⭐', name: 'Default',  q: 24, a: 12, desc: 'Daily Training' },
+        { id: 'velocity',   emoji: '🏎️', name: 'Velocity', q: 15, a: 5,  desc: 'Finals crunch'  },
+        { id: 'exam',       emoji: '📝', name: 'Exam',     q: 40, a: 20, desc: 'Real exam mode 1h' }
     ];
 
     let currentPresetIndex = GM_getValue('presetIndex', 0);
@@ -40,9 +40,9 @@
         islandLeft:          GM_getValue('islandLeft',          '50%'),
         autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
         sidebarHidden:       GM_getValue('sidebarHidden',       false),
-        courseImagesHidden:  GM_getValue('courseImagesHidden',  true),
-        courseCompact:       GM_getValue('courseCompact',       true),
-        statsPanelHidden:    GM_getValue('statsPanelHidden',    true),   // NEW: hide stats panel by default
+        // ── NEW ──────────────────────────────────────────────────────────────────
+        courseImagesHidden:  GM_getValue('courseImagesHidden',  true),   // hidden by default
+        courseCompact:       GM_getValue('courseCompact',       true),   // compact by default
     };
 
     let state = {
@@ -67,6 +67,8 @@
         fullscreenExitPending:    false,
         fullscreenExitTimeout:    null,
         observerDebounce:         null,
+        // v8.14: epoch counter — incremented on every clearTimer() so stale
+        //        nested callbacks become no-ops instead of firing on the wrong question
         timerEpoch:               0
     };
 
@@ -331,13 +333,12 @@
         document.body.appendChild(overlay);
         const closeOnEsc = (e) => { if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); } };
         window.addEventListener('keydown', closeOnEsc);
-        const removeOverlay = () => { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); };
         panel.querySelectorAll('.eqe-preset-row').forEach(row => {
-            row.onclick    = () => { applyPreset(parseInt(row.dataset.index)); removeOverlay(); };
+            row.onclick    = () => { applyPreset(parseInt(row.dataset.index)); overlay.remove(); };
             row.onmouseover = () => { row.style.backgroundColor = 'rgba(59,130,246,0.05)'; };
             row.onmouseout  = () => { row.style.backgroundColor = parseInt(row.dataset.index) === currentPresetIndex ? 'rgba(59,130,246,0.1)' : 'transparent'; };
         });
-        overlay.onclick = (e) => { if (e.target === overlay) removeOverlay(); };
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
     }
 
     // ============================================================================
@@ -537,6 +538,7 @@ a[href*="/exam/"]   .mt-auto {
         const label = config.courseImagesHidden ? '🖼️ Card images hidden' : '🖼️ Card images visible';
         showToast(label, 'info');
 
+        // Sync the checkbox in settings if panel is open
         const cb = document.getElementById('eqe-course-images-hidden');
         if (cb) cb.checked = config.courseImagesHidden;
     }
@@ -554,179 +556,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // COURSE PAGE: ARROW KEY NAVIGATION (#22)
-    // ============================================================================
-
-    const COURSE_FOCUS_STYLE_ID = 'eqe-course-focus-style';
-    let courseFocusIndex = -1;
-
-    function getCourseCards() {
-        return [...document.querySelectorAll('a[href*="/lesson/"], a[href*="/exam/"]')];
-    }
-
-    function focusCourseCard(index) {
-        const cards = getCourseCards();
-        if (cards.length === 0) return;
-
-        // Inject focus style if needed
-        if (!document.getElementById(COURSE_FOCUS_STYLE_ID)) {
-            const s = document.createElement('style');
-            s.id = COURSE_FOCUS_STYLE_ID;
-            s.textContent = `
-.eqe-card-focused {
-    outline: 3px solid #3b82f6 !important;
-    outline-offset: 2px !important;
-    box-shadow: 0 0 0 6px rgba(59,130,246,0.2) !important;
-    transition: outline 0.15s, box-shadow 0.15s !important;
-}`;
-            document.head.appendChild(s);
-        }
-
-        // Remove old focus
-        document.querySelectorAll('.eqe-card-focused').forEach(c => c.classList.remove('eqe-card-focused'));
-
-        // Clamp index
-        courseFocusIndex = Math.max(0, Math.min(index, cards.length - 1));
-        const card = cards[courseFocusIndex];
-        card.classList.add('eqe-card-focused');
-        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    function handleCoursePageKeys(e) {
-        if (!window.location.href.includes('/dashboard/course/')) return false;
-        const cards = getCourseCards();
-        if (cards.length === 0) return false;
-
-        const key = e.key;
-
-        if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(key)) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            if (courseFocusIndex < 0) {
-                focusCourseCard(0);
-            } else {
-                // Calculate grid columns for left/right vs up/down movement
-                const card = cards[0];
-                const grid = card?.parentElement;
-                let cols = 1;
-                if (grid) {
-                    const gridStyle = window.getComputedStyle(grid);
-                    const colTemplate = gridStyle.gridTemplateColumns;
-                    if (colTemplate) cols = colTemplate.split(/\s+/).filter(s => s.length > 0).length;
-                }
-                let delta = 0;
-                if (key === 'ArrowRight') delta = 1;
-                else if (key === 'ArrowLeft') delta = -1;
-                else if (key === 'ArrowDown') delta = cols;
-                else if (key === 'ArrowUp') delta = -cols;
-                focusCourseCard(courseFocusIndex + delta);
-            }
-            return true;
-        }
-
-        if ((key === 'Enter' || key === ' ') && courseFocusIndex >= 0) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            const card = cards[courseFocusIndex];
-            if (card?.href) window.location.href = card.href;
-            return true;
-        }
-
-        if ((key === 'r' || key === 'R') && courseFocusIndex >= 0) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            const card = cards[courseFocusIndex];
-            const resetBtn = card?.querySelector('button');
-            if (resetBtn && /reset|réinitialiser/i.test(resetBtn.textContent)) {
-                resetBtn.click();
-                showToast('🔄 Reset triggered', 'info');
-            }
-            return true;
-        }
-
-        return false;
-    }
-
-    // ============================================================================
-    // COURSE PAGE: HIDE STATS PANEL (NEW)
-    // ============================================================================
-
-    function getStatsPanel() {
-        // The stats panel is a div with class "mt-4" containing the stats card
-        // It's usually the first div.mt-4 that contains a div.relative.rounded-2xl.border.shadow-sm.bg-card
-        const candidates = document.querySelectorAll('div.mt-4 > div.relative.rounded-2xl.border.shadow-sm.bg-card');
-        for (const candidate of candidates) {
-            // Check if inside there is a heading "Statistiques"
-            const heading = candidate.querySelector('p.text-lg.font-semibold');
-            if (heading && heading.textContent.trim() === 'Statistiques') {
-                return candidate.closest('div.mt-4'); // return the parent div.mt-4
-            }
-        }
-        return null;
-    }
-
-    function applyStatsPanelVisibility() {
-        if (!window.location.href.includes('/dashboard/course/')) return;
-        const panel = getStatsPanel();
-        if (!panel) return;
-        if (config.statsPanelHidden) {
-            panel.style.display = 'none';
-        } else {
-            panel.style.display = '';
-        }
-    }
-
-    function toggleStatsPanel() {
-        config.statsPanelHidden = !config.statsPanelHidden;
-        GM_setValue('statsPanelHidden', config.statsPanelHidden);
-        applyStatsPanelVisibility();
-        const label = config.statsPanelHidden ? '📊 Stats panel hidden' : '📊 Stats panel visible';
-        showToast(label, 'info');
-        // Optionally update button active state
-        const btn = document.getElementById('eqe-toggle-stats');
-        if (btn) {
-            btn.style.opacity = config.statsPanelHidden ? '0.6' : '1';
-            btn.title = config.statsPanelHidden ? 'Show statistics panel' : 'Hide statistics panel';
-        }
-    }
-
-    // Inject stats toggle button next to dark mode button
-    function injectStatsToggleButton() {
-        if (!window.location.href.includes('/dashboard/course/')) return;
-        if (document.getElementById('eqe-toggle-stats')) return;
-
-        // Find the container that holds the theme toggle button and avatar
-        const buttonGroup = document.querySelector('div.flex.items-center.gap-4');
-        if (!buttonGroup) return;
-
-        // Find the dark mode button (the one with lucide-sun/lucide-moon)
-        const themeButton = buttonGroup.querySelector('button[data-slot="dropdown-menu-trigger"]');
-        if (!themeButton) return;
-
-        // Create our toggle button
-        const statsBtn = document.createElement('button');
-        statsBtn.id = 'eqe-toggle-stats';
-        statsBtn.textContent = '📊';
-        statsBtn.title = config.statsPanelHidden ? 'Show statistics panel' : 'Hide statistics panel';
-        statsBtn.style.opacity = config.statsPanelHidden ? '0.6' : '1';
-        // Copy styling from theme button to blend in
-        statsBtn.className = themeButton.className;
-        statsBtn.classList.add('text-base'); // ensure emoji is readable
-        statsBtn.style.fontSize = '1.2rem';
-        statsBtn.style.lineHeight = '1';
-        statsBtn.style.padding = '0';
-        // Remove any existing inner SVG/labels (we just want the emoji)
-        statsBtn.innerHTML = '📊';
-        statsBtn.setAttribute('aria-label', 'Toggle statistics panel');
-        statsBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleStatsPanel();
-        });
-
-        // Insert before the theme button
-        buttonGroup.insertBefore(statsBtn, themeButton);
-    }
-
-    // ============================================================================
-    // SHORTCUTS HELP OVERLAY (updated)
+    // SHORTCUTS HELP OVERLAY
     // ============================================================================
 
     function showShortcutsHelp() {
@@ -766,13 +596,11 @@ a[href*="/exam/"]   .mt-auto {
             <div style="margin-bottom:20px;">
                 <h4 style="font-size:16px;margin-bottom:10px;color:#3b82f6;">Script Features</h4>
                 <ul style="list-style:none;padding:0;margin:0;line-height:1.8;">
-                    <li>${kbd('H')} : Toggle Sidebar (works on course page too)</li>
+                    <li>${kbd('H')} : Toggle Sidebar Visibility</li>
                     <li>${kbd('F')} : Enter Fullscreen <em style="font-size:11px;opacity:0.7;">(press F twice to exit)</em></li>
                     <li>${kbd('I')} : View Image</li>
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
-                    <li>${kbd('V')} : Copy Question Prompt</li>
-                    <li>${kbd('Shift + V')} : Ask AI Service (ChatGPT, Claude, etc.)</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
                     <li>${kbd('Shift + S')} or ${kbd('6')} : Open Settings Panel</li>
@@ -786,150 +614,22 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('T')} or ${kbd('8')} : Cycle Timer Loadout</li>
                     <li>${kbd('Shift + T')} or Hold ${kbd('T')} : Show Loadout Table</li>
                     <li>${kbd('M')} or ${kbd('9')} : Open Course Switcher</li>
-                    <li>${kbd('S')} : Toggle Stats Panel (course page)</li>
-                    <li>${kbd('← → ↑ ↓')} (course page) : Navigate cards</li>
-                    <li>${kbd('Enter')} (course page) : Open focused card</li>
-                    <li>${kbd('R')} (course page) : Reset focused card</li>
-                    <li>📊 Button (header) : Toggle course statistics panel</li>
                 </ul>
             </div>
             <p style="margin:20px 0 0 0;font-size:13px;opacity:0.7;text-align:center;font-style:italic;">Click background or press [Esc] to close</p>`;
         overlay.appendChild(panel);
         document.body.appendChild(overlay);
-        const removeOverlayHelp = () => { overlay.remove(); window.removeEventListener('keydown', closeOverlay); };
-        const closeOverlay = (e) => { if (e.key === 'Escape') removeOverlayHelp(); };
+        const closeOverlay = (e) => { if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOverlay); } };
         window.addEventListener('keydown', closeOverlay);
-        overlay.onclick = (e) => { if (e.target === overlay) removeOverlayHelp(); };
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
     }
 
     // ============================================================================
-    // COPY QUESTION PROMPT (V key)
-    // ============================================================================
-
-    function buildQuestionPrompt() {
-        const questionEl = document.querySelector('h2');
-        if (!questionEl) return null;
-        const question = questionEl.textContent.trim();
-        const answerBtns = getAnswerButtons();
-        if (answerBtns.length === 0) return null;
-
-        const labels = ['A', 'B', 'C', 'D', 'E'];
-        const propositions = answerBtns.map((btn, i) => {
-            // Get the text content after the label badge
-            const texts = [];
-            btn.querySelectorAll('p, span').forEach(el => {
-                const t = el.textContent.trim();
-                if (t && !labels.includes(t) && t.length > 1) texts.push(t);
-            });
-            const propText = texts.join(' ').trim() || btn.textContent.replace(/^[A-E]\s*/, '').trim();
-            return `${labels[i] || (i + 1)}. ${propText}`;
-        }).join('\n');
-
-        return `Question médicale :\n${question}\n\nPropositions :\n${propositions}\n\nPour chaque proposition, indique si elle est VRAIE ou FAUSSE avec une explication courte et précise.`;
-    }
-
-    function copyQuestionPrompt() {
-        const prompt = buildQuestionPrompt();
-        if (!prompt) {
-            showToast('No question found to copy', 'warning');
-            return;
-        }
-        navigator.clipboard.writeText(prompt).then(() => {
-            showToast('📋 Question prompt copied!', 'success');
-        }).catch(() => {
-            // Fallback for clipboard API failure
-            const ta = document.createElement('textarea');
-            ta.value = prompt;
-            ta.style.cssText = 'position:fixed;top:-9999px;';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-            showToast('📋 Question prompt copied!', 'success');
-        });
-    }
-
-    function showAIServiceMenu() {
-        const existing = document.getElementById('eqe-ai-menu-overlay');
-        if (existing) { existing.remove(); return; }
-        const prompt = buildQuestionPrompt();
-        if (!prompt) {
-            showToast('No question found', 'warning');
-            return;
-        }
-        const encoded = encodeURIComponent(prompt);
-        const services = [
-            { name: 'ChatGPT',   emoji: '🤖', url: `https://chat.openai.com/?q=${encoded}` },
-            { name: 'Claude',    emoji: '🧠', url: `https://claude.ai/new?q=${encoded}` },
-            { name: 'Gemini',    emoji: '💎', url: `https://gemini.google.com/app?q=${encoded}` },
-            { name: 'Perplexity',emoji: '🔍', url: `https://www.perplexity.ai/?q=${encoded}` },
-            { name: 'Copy Only', emoji: '📋', url: null }
-        ];
-        const isDark  = isDarkMode();
-        const bg      = isDark ? '#1f2937' : '#ffffff';
-        const text    = isDark ? '#f3f4f6' : '#1f2937';
-        const border  = isDark ? '#374151' : '#e5e7eb';
-        const overlay = document.createElement('div');
-        overlay.id = 'eqe-ai-menu-overlay';
-        Object.assign(overlay.style, {
-            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
-            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', zIndex: '2000000', backdropFilter: 'blur(4px)'
-        });
-        const panel = document.createElement('div');
-        Object.assign(panel.style, {
-            backgroundColor: bg, color: text, padding: '24px', borderRadius: '16px',
-            border: '2px solid #3b82f6', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)',
-            maxWidth: '400px', width: '90%'
-        });
-        panel.innerHTML = `
-            <h3 style="margin:0 0 16px 0;font-size:18px;font-weight:700;">Ask AI Service</h3>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                ${services.map((s, i) => `
-                <button class="eqe-ai-row" data-index="${i}"
-                    style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;
-                    border:1px solid ${border};background:transparent;color:${text};cursor:pointer;
-                    font-size:15px;font-weight:500;transition:background 0.15s;">
-                    <span style="font-size:20px;">${s.emoji}</span>
-                    <span>${s.name}</span>
-                </button>`).join('')}
-            </div>
-            <p style="margin:16px 0 0 0;font-size:12px;opacity:0.6;text-align:center;">Press [Esc] to close</p>`;
-        overlay.appendChild(panel);
-        document.body.appendChild(overlay);
-
-        panel.querySelectorAll('.eqe-ai-row').forEach(row => {
-            const idx = parseInt(row.dataset.index);
-            row.onmouseover = () => { row.style.backgroundColor = 'rgba(59,130,246,0.1)'; };
-            row.onmouseout  = () => { row.style.backgroundColor = 'transparent'; };
-            row.onclick = () => {
-                const svc = services[idx];
-                if (svc.url) {
-                    navigator.clipboard.writeText(prompt).catch(() => {});
-                    window.open(svc.url, '_blank');
-                } else {
-                    copyQuestionPrompt();
-                }
-                overlay.remove();
-            };
-        });
-
-        const closeOnEsc = (e) => { if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); } };
-        window.addEventListener('keydown', closeOnEsc);
-        overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); } };
-    }
-
-    // ============================================================================
-    // SIDEBAR TOGGLE (updated for course page)
+    // SIDEBAR TOGGLE
     // ============================================================================
 
     function toggleSidebar() {
-        // Match both the global app sidebar and the course module sidebar
-        const sidebar = document.querySelector(
-            'aside.h-full.lg\\:w-\\[270px\\], ' +           // main dashboard sidebar
-            'aside.h-full.xl\\:w-\\[300px\\], ' +           // alternative dashboard sidebar
-            'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'   // course page module sidebar
-        );
+        const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
         if (!sidebar) return;
         config.sidebarHidden = !config.sidebarHidden;
         GM_setValue('sidebarHidden', config.sidebarHidden);
@@ -1001,17 +701,16 @@ a[href*="/exam/"]   .mt-auto {
             const totalMins = POMO_HOURS * 60 + POMO_MINUTES;
             const label = POMO_HOURS > 0 ? `${POMO_HOURS}h ${POMO_MINUTES}min` : `${POMO_MINUTES}min`;
             showHUDToast({ emoji: '🍅', name: 'Session', q: totalMins, a: '-', desc: `${label} timer started` });
-            pomoState.interval = registerInterval(setInterval(() => {
+            pomoState.interval = setInterval(() => {
                 pomoState.remaining--;
                 updatePomotroidVisuals();
                 if (pomoState.remaining <= 0) {
                     clearInterval(pomoState.interval);
-                    cleanupRegistry.intervals.delete(pomoState.interval);
                     pomoState.interval = null;
                     pomoState.running  = false;
                     onPomotroidFinished();
                 }
-            }, 1000));
+            }, 1000);
             updatePomotroidVisuals();
         }
     }
@@ -1269,14 +968,10 @@ a[href*="/exam/"]   .mt-auto {
     // DYNAMIC ISLAND TIMER DISPLAY
     // ============================================================================
 
-    function getPresetGradient() {
-        return PRESETS[currentPresetIndex].gradient;
-    }
-
     function createDynamicIslandTimer() {
         const island = document.createElement('div');
         island.id = 'eqe-dynamic-island';
-        const qGrad   = getPresetGradient();
+        const qGrad   = getDynamicGradient();
         const aGrad   = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
         const lowGrad = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
         Object.assign(island.style, {
@@ -1292,6 +987,7 @@ a[href*="/exam/"]   .mt-auto {
             cursor: 'default', userSelect: 'none', backdropFilter: 'blur(20px)',
             transition: 'all 0.4s cubic-bezier(0.4,0,0.2,1)', opacity: '0'
         });
+        island.dataset.questionGradient = qGrad;
         island.dataset.answerGradient   = aGrad;
         island.dataset.lowTimeGradient  = lowGrad;
         return island;
@@ -1300,7 +996,7 @@ a[href*="/exam/"]   .mt-auto {
     function updateDynamicIslandTimer() {
         const island = document.getElementById('eqe-dynamic-island');
         if (!island) return;
-        const qGrad   = getPresetGradient();
+        const qGrad   = island.dataset.questionGradient;
         const aGrad   = island.dataset.answerGradient;
         const lowGrad = island.dataset.lowTimeGradient;
         if (!config.autoAdvanceEnabled || !state.currentPhase) {
@@ -1320,20 +1016,11 @@ a[href*="/exam/"]   .mt-auto {
         const emoji  = state.currentPhase === 'question' ? '❓' : '✅';
         const isLow  = state.timeRemaining <= 3 && state.timeRemaining > 0;
         island.style.background = isLow ? lowGrad : (state.currentPhase === 'question' ? qGrad : aGrad);
-
-        // Question counter: how many questions left in the pomo session
-        let counterHtml = '';
-        if (pomoState.running && pomoState.remaining > 0) {
-            const cycleTime = config.questionTimer + config.answerTimer;
-            const questionsLeft = cycleTime > 0 ? Math.ceil(pomoState.remaining / cycleTime) : 0;
-            counterHtml = `<span style="margin-left:10px;font-size:11px;opacity:0.75;border-left:1px solid rgba(255,255,255,0.3);padding-left:10px;">~${questionsLeft}q</span>`;
-        }
-
         if (state.timeRemaining > 0) {
             island.innerHTML = `
                 <span style="margin-right:8px;font-size:18px;">${emoji}</span>
                 <span style="opacity:0.9;margin-right:8px;">${phase}</span>
-                <span style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;min-width:32px;text-align:center;${isLow?'animation:pulse 1s infinite;':''}">${state.timeRemaining}s</span>${counterHtml}`;
+                <span style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;min-width:32px;text-align:center;${isLow?'animation:pulse 1s infinite;':''}">${state.timeRemaining}s</span>`;
             if (isLow && !document.getElementById('eqe-pulse-animation')) {
                 const s = document.createElement('style');
                 s.id = 'eqe-pulse-animation';
@@ -1344,7 +1031,7 @@ a[href*="/exam/"]   .mt-auto {
             island.innerHTML = `
                 <span style="margin-right:8px;font-size:18px;">${emoji}</span>
                 <span style="opacity:0.9;margin-right:8px;">${phase}</span>
-                <span style="font-size:20px;font-weight:700;">✓</span>${counterHtml}`;
+                <span style="font-size:20px;font-weight:700;">✓</span>`;
         }
     }
 
@@ -1438,6 +1125,7 @@ a[href*="/exam/"]   .mt-auto {
                 </div>
                 <small style="color:${c.smallColor};margin-top:4px;display:block;">Default: 0h 40min · resets idle timer on save</small>
             </div>
+            <!-- NEW: Course page settings -->
             <div style="margin-bottom:15px;padding-top:15px;border-top:1px solid ${c.borderTop};">
                 <label style="display:block;margin-bottom:8px;color:${c.labelColor};font-size:14px;font-weight:600;">📚 Course Page</label>
                 <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:6px;">
@@ -1484,6 +1172,7 @@ a[href*="/exam/"]   .mt-auto {
         const autoSelectOnTimeout = document.getElementById('eqe-auto-select').checked;
         const pomoHours   = Math.max(0, Math.min(23, parseInt(document.getElementById('eqe-pomo-hours').value)   || 0));
         const pomoMinutes = Math.max(0, Math.min(59, parseInt(document.getElementById('eqe-pomo-minutes').value) || 0));
+        // NEW: read course settings
         const courseImagesHidden = document.getElementById('eqe-course-images-hidden')?.checked ?? config.courseImagesHidden;
         const courseCompact      = document.getElementById('eqe-course-compact')?.checked      ?? config.courseCompact;
 
@@ -1501,6 +1190,7 @@ a[href*="/exam/"]   .mt-auto {
         GM_setValue('autoAdvanceEnabled',  autoAdvanceEnabled);
         GM_setValue('autoSelectOnTimeout', autoSelectOnTimeout);
 
+        // Save course settings
         config.courseImagesHidden = courseImagesHidden;
         config.courseCompact      = courseCompact;
         GM_setValue('courseImagesHidden', courseImagesHidden);
@@ -1558,7 +1248,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // TIMER LOGIC (epoch-guarded)
+    // TIMER LOGIC  (v8.14 — epoch-guarded to prevent stale-callback double-advance)
     // ============================================================================
 
     function clearTimer() {
@@ -1567,30 +1257,35 @@ a[href*="/exam/"]   .mt-auto {
             cleanupRegistry.timeouts.delete(state.timerHandle);
             state.timerHandle = null;
         }
+        // v8.14: bump epoch — any in-flight nested callbacks that captured the old
+        // epoch value will detect the mismatch and silently bail out.
         state.timerEpoch++;
     }
 
-    const isLessonOrExam = () => /\/(lesson|exam)\//.test(window.location.href);
-
     function startTimer() {
-        if (!config.autoAdvanceEnabled || !isLessonOrExam()) { hideTimer(); return; }
+        if (!config.autoAdvanceEnabled) { hideTimer(); return; }
         clearTimer();
         if      (state.currentPhase === 'question') startQuestionTimer();
         else if (state.currentPhase === 'answer')   startAnswerTimer();
     }
 
+    // v8.14: every nested setTimeout captures `epoch` at creation and checks it
+    // before executing.  If the user navigated/answered manually in the meantime
+    // the epoch will have changed and the callback becomes a no-op.
     function startQuestionTimer() {
         const epoch = state.timerEpoch;
         startCountdown(config.questionTimer);
         state.timerHandle = registerTimeout(setTimeout(() => {
-            if (state.timerEpoch !== epoch) return;
+            if (state.timerEpoch !== epoch) return; // stale — user already acted
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
             const proceed = () => {
-                if (state.timerEpoch !== epoch) return;
+                if (state.timerEpoch !== epoch) return; // stale guard
                 const btn = getCheckBtn();
                 if (btn) {
                     btn.click(); clearTimer();
+                    // clearTimer() bumped epoch again — capture new one for the
+                    // answer-phase transition
                     const epoch2 = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
                         if (state.timerEpoch !== epoch2) return;
@@ -1619,33 +1314,22 @@ a[href*="/exam/"]   .mt-auto {
         const epoch = state.timerEpoch;
         startCountdown(config.answerTimer);
         state.timerHandle = registerTimeout(setTimeout(() => {
-            if (state.timerEpoch !== epoch) return;
+            if (state.timerEpoch !== epoch) return; // stale — user already navigated
             state.timeRemaining = 0;
             updateDynamicIslandTimer();
             playNotificationSound();
-            // Use a nested timeout to give the user a moment to see the result
-            const delayId = registerTimeout(setTimeout(() => {
-                if (state.timerEpoch !== epoch) return;
-                // Reset state BEFORE clicking next to prevent double-advance
-                clearTimer();
-                stopCountdown();
-                state.currentPhase             = null;
-                state.isAnswerSelected         = false;
-                state.spacePressed             = false;
-                state.answerSelectedAfterSpace = false;
-                state.lastQuestionText         = null;
-                state.manuallyNavigated        = true;
+            registerTimeout(setTimeout(() => {
+                if (state.timerEpoch !== epoch) return; // stale guard
+                hideTimer();
                 const nextBtn = getNextBtn();
                 if (nextBtn) {
+                    state.manuallyNavigated = true;
                     nextBtn.click();
-                    // If the vanilla nav listener is bound, it handles onQuestionLoad().
-                    // If not, we need to trigger it ourselves.
-                    if (!nextBtn.dataset.eqeNavBound) {
-                        registerTimeout(setTimeout(() => {
-                            state.lastQuestionText = null;
-                            onQuestionLoad();
-                        }, 250));
-                    }
+                    registerTimeout(setTimeout(() => {
+                        if (state.timerEpoch !== epoch) return;
+                        state.lastQuestionText = null;
+                        onQuestionLoad();
+                    }, 200));
                 }
             }, 800));
         }, config.answerTimer * 1000));
@@ -1709,6 +1393,7 @@ a[href*="/exam/"]   .mt-auto {
             if (!label || !['A','B','C','D','E'].includes(label)) continue;
             if (el.classList.contains('bg-white/15') || el.classList.contains('bg-white/12')) return true;
         }
+        // Fallback: check answer containers for selection gradient
         const containers = document.querySelectorAll(
             'div.group.relative.w-full.overflow-hidden.rounded-2xl.border'
         );
@@ -1728,11 +1413,13 @@ a[href*="/exam/"]   .mt-auto {
                 if (mutation.type !== 'attributes' || mutation.attributeName !== 'class') continue;
                 const el = mutation.target;
                 if (!(el instanceof Element)) continue;
+                // Check label badge (direct text like A/B/C/D/E)
                 const label = el.textContent?.trim();
                 if (label && ['A','B','C','D','E'].includes(label) &&
                     el.classList.contains('bg-white/15')) {
                     state.isAnswerSelected = true; return;
                 }
+                // Check answer container for selection gradient
                 if (el.classList.contains('rounded-2xl') && el.classList.contains('border') &&
                     el.classList.contains('from-[#1068B9]')) {
                     const containerLabel = el.firstElementChild?.firstElementChild?.textContent?.trim();
@@ -1746,6 +1433,9 @@ a[href*="/exam/"]   .mt-auto {
         return obs;
     }
 
+    // v8.14: epoch-guarded — the 300ms delayed startAnswerTimer call captures the
+    // epoch so that if the user arrow-navigates within that 300ms window the stale
+    // callback is discarded.
     function onAnswerBtnClick(e) {
         let target = e.target;
         while (target && target !== document.body) {
@@ -1758,7 +1448,7 @@ a[href*="/exam/"]   .mt-auto {
                         state.isAnswerSelected = true;
                         const epoch = state.timerEpoch;
                         setTimeout(() => {
-                            if (state.timerEpoch !== epoch) return;
+                            if (state.timerEpoch !== epoch) return; // stale
                             clearTimer();
                             state.currentPhase = 'answer';
                             state.spacePressed = true;
@@ -1797,7 +1487,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // KEYBOARD HANDLER
+    // KEYBOARD HANDLER  (v8.14 — epoch-guarded delayed callbacks)
     // ============================================================================
 
     function handleKeydown(e) {
@@ -1855,13 +1545,10 @@ a[href*="/exam/"]   .mt-auto {
         }
 
         if (key === 's' && e.shiftKey)  { toggleSettings(); e.preventDefault(); e.stopImmediatePropagation(); return; }
-        if (key === 's' && !e.shiftKey) { if (window.location.href.includes('/dashboard/course/')) { toggleStatsPanel(); e.preventDefault(); e.stopImmediatePropagation(); return; } }
         if (key === 'c')                { const b = getCGroupBtn();   if (b) { b.click(); e.preventDefault(); e.stopImmediatePropagation(); } return; }
         if (key === 'a' && e.shiftKey)  { const b = document.getElementById('eqe-btn-toggle'); if (b) { toggleAutoAdvance(b); e.preventDefault(); e.stopImmediatePropagation(); } return; }
         if (key === 'a' && !e.shiftKey) { const b = getExplainBtn(); if (b) { b.click(); e.preventDefault(); e.stopImmediatePropagation(); } return; }
         if (key === 'i')                { const b = getViewImageBtn(); if (b) { b.click(); e.preventDefault(); e.stopImmediatePropagation(); } return; }
-        if (key === 'v' && e.shiftKey)  { showAIServiceMenu(); e.preventDefault(); e.stopImmediatePropagation(); return; }
-        if (key === 'v' && !e.shiftKey) { copyQuestionPrompt(); e.preventDefault(); e.stopImmediatePropagation(); return; }
         if (key === 'p')                { togglePomotroid(); e.preventDefault(); e.stopImmediatePropagation(); return; }
         if (key === 'h')                { toggleSidebar();   e.preventDefault(); e.stopImmediatePropagation(); return; }
         if (key === 'f')                { handleFullscreenKey(); e.preventDefault(); e.stopImmediatePropagation(); return; }
@@ -1872,9 +1559,6 @@ a[href*="/exam/"]   .mt-auto {
             if (state.spacePressed && !state.answerSelectedAfterSpace) state.answerSelectedAfterSpace = true;
         }
 
-        // Course page Enter/Space/R handled before lesson logic
-        if (handleCoursePageKeys(e)) return;
-
         if (e.key === ' ' || e.key === 'Enter') {
             const btn = getCheckBtn();
             if (btn) {
@@ -1884,9 +1568,11 @@ a[href*="/exam/"]   .mt-auto {
                     state.spacePressed = true;
                     if (!answerReady) return;
                     btn.click(); clearTimer();
+                    // v8.14: capture epoch AFTER clearTimer() so the callback
+                    // is tied to the new epoch
                     const epoch = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
-                        if (state.timerEpoch !== epoch) return;
+                        if (state.timerEpoch !== epoch) return; // stale
                         state.currentPhase = 'answer';
                         if (config.autoAdvanceEnabled) startAnswerTimer(); else hideTimer();
                     }, 300));
@@ -1894,7 +1580,7 @@ a[href*="/exam/"]   .mt-auto {
                     btn.click(); clearTimer();
                     const epoch = state.timerEpoch;
                     registerTimeout(setTimeout(() => {
-                        if (state.timerEpoch !== epoch) return;
+                        if (state.timerEpoch !== epoch) return; // stale
                         state.currentPhase             = 'answer';
                         state.spacePressed             = false;
                         state.answerSelectedAfterSpace = false;
@@ -1947,13 +1633,9 @@ a[href*="/exam/"]   .mt-auto {
         }
 
         injectInlineControls();
-        injectStatsToggleButton();   // NEW: add stats toggle button
 
-        // Apply saved sidebar hidden state (global and course page)
         if (config.sidebarHidden) {
-            const sidebar = document.querySelector(
-                'aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\], aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'
-            );
+            const sidebar = document.querySelector('aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\]');
             if (sidebar) sidebar.style.display = 'none';
         }
 
@@ -1980,33 +1662,29 @@ a[href*="/exam/"]   .mt-auto {
                 if (course) showHUDToast({ emoji: '📍', name: 'Current Course', q: '-', a: '-', desc: course.name });
             }
 
-            applyCourseStyles();
-            applyStatsPanelVisibility();  // NEW: hide stats panel if configured
+            applyCourseStyles(); // Apply course page styling on load
         }, 500));
     }
 
     const observer = new MutationObserver(() => {
         if (state.observerDebounce) return;
-        state.observerDebounce = registerTimeout(setTimeout(() => {
+        state.observerDebounce = setTimeout(() => {
             state.observerDebounce = null;
 
             if (!document.getElementById('eqe-inline-container')) injectInlineControls();
             attachVanillaNavListeners();
-            applyCourseStyles();
-            injectStatsToggleButton();       // ensure button exists after navigation
-            applyStatsPanelVisibility();     // reapply hiding on DOM changes
+            applyCourseStyles(); // Re-apply course styles on every DOM change
 
             const currentUrl = window.location.href;
             if (currentUrl !== state.lastUrl) {
                 state.lastUrl = currentUrl;
                 injectInlineControls();
-                courseFocusIndex = -1; // reset card focus on navigation
             }
             if (currentUrl.includes('/dashboard')) {
                 scanAndSaveCourses();
                 decorateDashboardModules();
             }
-        }, 100));
+        }, 100);
     });
 
     registerObserver(observer);

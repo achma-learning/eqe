@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.20
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Preset island colors • Question counter • Auto-advance lesson/exam only • Timer bug fixes
+// @version      8.21
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -78,9 +78,29 @@
     let POMO_MINUTES = GM_getValue('pomoMinutes', 40);
     let POMO_TOTAL_SECONDS = (POMO_HOURS * 60 + POMO_MINUTES) * 60;
 
+    // Restore pomo timer state from GM storage (persists across page changes)
+    const savedPomoStartedAt = GM_getValue('pomoStartedAt', 0);
+    const savedPomoRunning   = GM_getValue('pomoRunning',   false);
+    const savedPomoPaused    = GM_getValue('pomoPausedRemaining', 0);
+
+    let restoredRemaining = POMO_TOTAL_SECONDS;
+    let restoredRunning   = false;
+    if (savedPomoRunning && savedPomoStartedAt > 0) {
+        const elapsed = Math.floor((Date.now() - savedPomoStartedAt) / 1000);
+        restoredRemaining = Math.max(0, POMO_TOTAL_SECONDS - elapsed);
+        restoredRunning   = restoredRemaining > 0;
+        if (!restoredRunning) {
+            // Timer expired while away — clear saved state
+            GM_setValue('pomoRunning', false);
+            GM_setValue('pomoStartedAt', 0);
+        }
+    } else if (savedPomoPaused > 0) {
+        restoredRemaining = savedPomoPaused;
+    }
+
     const pomoState = {
-        running:   false,
-        remaining: POMO_TOTAL_SECONDS,
+        running:   restoredRunning,
+        remaining: restoredRemaining,
         interval:  null
     };
 
@@ -527,6 +547,16 @@ a[href*="/exam/"]   .mt-auto {
         }
 
         styleEl.textContent = buildCourseCSS();
+        expandAllCollapsibles();
+    }
+
+    // Auto-expand all closed collapsible sections on course page
+    function expandAllCollapsibles() {
+        if (!window.location.href.includes('/dashboard/course/')) return;
+        const closedTriggers = document.querySelectorAll(
+            '[data-slot="collapsible-trigger"][data-state="closed"]'
+        );
+        closedTriggers.forEach(trigger => trigger.click());
     }
 
     function toggleCourseImages() {
@@ -988,30 +1018,48 @@ a[href*="/exam/"]   .mt-auto {
         return btn;
     }
 
+    function startPomoInterval() {
+        if (pomoState.interval) return;
+        pomoState.interval = registerInterval(setInterval(() => {
+            pomoState.remaining--;
+            updatePomotroidVisuals();
+            if (pomoState.remaining <= 0) {
+                clearInterval(pomoState.interval);
+                cleanupRegistry.intervals.delete(pomoState.interval);
+                pomoState.interval = null;
+                pomoState.running  = false;
+                GM_setValue('pomoRunning', false);
+                GM_setValue('pomoStartedAt', 0);
+                GM_setValue('pomoPausedRemaining', 0);
+                onPomotroidFinished();
+            }
+        }, 1000));
+    }
+
     function togglePomotroid() {
         if (pomoState.running) {
             pomoState.running = false;
             clearInterval(pomoState.interval);
+            cleanupRegistry.intervals.delete(pomoState.interval);
             pomoState.interval = null;
+            // Save paused state
+            GM_setValue('pomoRunning', false);
+            GM_setValue('pomoStartedAt', 0);
+            GM_setValue('pomoPausedRemaining', pomoState.remaining);
             updatePomotroidVisuals();
             showToast('⏸️ Session timer paused', 'info');
         } else {
             if (pomoState.remaining <= 0) pomoState.remaining = pomoTotalSeconds();
             pomoState.running = true;
+            // Save running state with start timestamp
+            const startedAt = Date.now() - ((pomoTotalSeconds() - pomoState.remaining) * 1000);
+            GM_setValue('pomoRunning', true);
+            GM_setValue('pomoStartedAt', startedAt);
+            GM_setValue('pomoPausedRemaining', 0);
             const totalMins = POMO_HOURS * 60 + POMO_MINUTES;
             const label = POMO_HOURS > 0 ? `${POMO_HOURS}h ${POMO_MINUTES}min` : `${POMO_MINUTES}min`;
             showHUDToast({ emoji: '🍅', name: 'Session', q: totalMins, a: '-', desc: `${label} timer started` });
-            pomoState.interval = registerInterval(setInterval(() => {
-                pomoState.remaining--;
-                updatePomotroidVisuals();
-                if (pomoState.remaining <= 0) {
-                    clearInterval(pomoState.interval);
-                    cleanupRegistry.intervals.delete(pomoState.interval);
-                    pomoState.interval = null;
-                    pomoState.running  = false;
-                    onPomotroidFinished();
-                }
-            }, 1000));
+            startPomoInterval();
             updatePomotroidVisuals();
         }
     }
@@ -1121,15 +1169,25 @@ a[href*="/exam/"]   .mt-auto {
         playNotificationSound();
         showToast('🍅 Session complete! Take a break.', 'success');
         showPomoFinishOverlay();
-        setTimeout(() => { pomoState.remaining = pomoTotalSeconds(); updatePomotroidVisuals(); }, 5000);
+        setTimeout(() => {
+            pomoState.remaining = pomoTotalSeconds();
+            GM_setValue('pomoPausedRemaining', 0);
+            updatePomotroidVisuals();
+        }, 5000);
     }
 
     function applyPomoDuration(hours, minutes) {
         POMO_HOURS   = hours;
         POMO_MINUTES = minutes;
+        POMO_TOTAL_SECONDS = (hours * 60 + minutes) * 60;
         GM_setValue('pomoHours',   hours);
         GM_setValue('pomoMinutes', minutes);
-        if (!pomoState.running) { pomoState.remaining = pomoTotalSeconds(); updatePomotroidVisuals(); }
+        if (!pomoState.running) {
+            pomoState.remaining = pomoTotalSeconds();
+            GM_setValue('pomoPausedRemaining', 0);
+            GM_setValue('pomoStartedAt', 0);
+            updatePomotroidVisuals();
+        }
         const btn = document.getElementById('eqe-btn-pomo');
         if (btn) {
             const label = hours > 0 ? `${hours}h ${minutes}min` : `${minutes}min`;
@@ -1955,6 +2013,12 @@ a[href*="/exam/"]   .mt-auto {
                 'aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\], aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'
             );
             if (sidebar) sidebar.style.display = 'none';
+        }
+
+        // Resume pomo timer if it was running before page change (#24)
+        if (pomoState.running && pomoState.remaining > 0) {
+            startPomoInterval();
+            updatePomotroidVisuals();
         }
 
         registerEventListener(document, 'keydown', handleKeydown, true);

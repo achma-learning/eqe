@@ -1,5 +1,11 @@
 # Changelogs
 
+## 2026-04-25 - Version 8.23
+- Fixed **Sidebar `H` shortcut** requiring two presses on first page load:
+    - `toggleSidebar()` now derives the toggle direction from the live DOM (`style.display`) instead of the stored boolean, so saved state and DOM can never desync.
+    - On init, when `sidebarHidden=true` but the sidebar isn't mounted yet (Next.js hydration), a `MutationObserver` waits for it and applies `display:none` as soon as it appears (capped at 10s).
+- **Case-insensitive shortcuts** on the course page handler: single-character keys are now lower-cased before comparison, mirroring the main keyboard handler. Effectively `r`/`R` (and any future letter shortcuts on `/dashboard/course/*`) work whether CapsLock is on or off.
+
 ## 2026-04-25 - Version 8.22
 - Added **Reset confirmation** on course page:
     - Pressing **`R`** on a focused lesson card now asks for confirmation instead of resetting immediately.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.21
+// @version      8.22
 // @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -66,6 +66,8 @@
         dashboardConfirmTimeout:  null,
         fullscreenExitPending:    false,
         fullscreenExitTimeout:    null,
+        resetConfirmPending:      false,
+        resetConfirmTimeout:      null,
         observerDebounce:         null,
         timerEpoch:               0
     };
@@ -616,7 +618,13 @@ a[href*="/exam/"]   .mt-auto {
         document.querySelectorAll('.eqe-card-focused').forEach(c => c.classList.remove('eqe-card-focused'));
 
         // Clamp index
-        courseFocusIndex = Math.max(0, Math.min(index, cards.length - 1));
+        const newIndex = Math.max(0, Math.min(index, cards.length - 1));
+        if (newIndex !== courseFocusIndex && state.resetConfirmPending) {
+            clearTimeout(state.resetConfirmTimeout);
+            state.resetConfirmPending = false;
+            state.resetConfirmTimeout = null;
+        }
+        courseFocusIndex = newIndex;
         const card = cards[courseFocusIndex];
         card.classList.add('eqe-card-focused');
         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -663,10 +671,28 @@ a[href*="/exam/"]   .mt-auto {
         if ((key === 'r' || key === 'R') && courseFocusIndex >= 0) {
             e.preventDefault(); e.stopImmediatePropagation();
             const card = cards[courseFocusIndex];
-            const resetBtn = card?.querySelector('button');
-            if (resetBtn && /reset|réinitialiser/i.test(resetBtn.textContent)) {
+            // Find reset button by SVG class or text — first <button> isn't always the reset one.
+            const resetBtn = [...(card?.querySelectorAll('button') || [])].find(b =>
+                b.querySelector('svg.lucide-rotate-ccw') ||
+                /^\s*reset\s*$|réinitialiser/i.test(b.textContent || '')
+            );
+            if (!resetBtn) {
+                showToast('No reset button on this card', 'warning');
+                return true;
+            }
+            if (state.resetConfirmPending) {
+                clearTimeout(state.resetConfirmTimeout);
+                state.resetConfirmPending = false;
+                state.resetConfirmTimeout = null;
                 resetBtn.click();
-                showToast('🔄 Reset triggered', 'info');
+                showToast('🔄 Lesson progress reset', 'success');
+            } else {
+                state.resetConfirmPending = true;
+                showToast('⚠️ Press R again to reset this lesson\'s progress', 'warning');
+                state.resetConfirmTimeout = registerTimeout(setTimeout(() => {
+                    state.resetConfirmPending = false;
+                    state.resetConfirmTimeout = null;
+                }, 3000));
             }
             return true;
         }
@@ -819,7 +845,7 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('S')} : Toggle Stats Panel (course page)</li>
                     <li>${kbd('← → ↑ ↓')} (course page) : Navigate cards</li>
                     <li>${kbd('Enter')} (course page) : Open focused card</li>
-                    <li>${kbd('R')} (course page) : Reset focused card</li>
+                    <li>${kbd('R')} (course page) : Reset focused lesson progress (press twice to confirm)</li>
                     <li>📊 Button (header) : Toggle course statistics panel</li>
                 </ul>
             </div>

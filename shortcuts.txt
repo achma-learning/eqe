@@ -27,6 +27,12 @@
 - **`M`** or **`9`** : Open Course Switcher (Full Module List)
 - **`1` – `9`** (While Switcher Open) : Select Module and Redirect
 
+## Course Page (`/dashboard/course/*`)
+- **`← → ↑ ↓`** : Navigate between lesson cards
+- **`Enter`** / **`Space`** : Open focused lesson
+- **`R`** : Reset focused lesson progress (press twice within 3s to confirm)
+- **`S`** : Toggle Stats Panel
+
 ## Inline Button Controls (Top Right)
 - **Loadout Button** (⭐/🏎️/📝):
     - **Click** : Cycle to next loadout

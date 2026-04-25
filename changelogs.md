@@ -1,5 +1,14 @@
 # Changelogs
 
+## 2026-04-25 - Version 8.22
+- Added **Reset confirmation** on course page:
+    - Pressing **`R`** on a focused lesson card now asks for confirmation instead of resetting immediately.
+    - Toast: "⚠️ Press R again to reset this lesson's progress" (3s window).
+    - Second `R` press within the window clicks the lesson's Reset button and shows "🔄 Lesson progress reset".
+- Improved **Reset button detection**: now matches the `lucide-rotate-ccw` SVG (or "Reset"/"Réinitialiser" text) instead of just the first `<button>` inside the card.
+- Pending reset state is auto-cleared when the user moves to another card (arrow keys) or after a 3s timeout.
+- Updated `shortcuts.txt` and the in-app `Shift + ?` help overlay to reflect the two-press confirmation.
+
 ## 2026-03-05 15:15 - Version 8.1
 - Updated keyboard shortcuts:
     - **Course Switcher**: Changed from `Shift + M` to **`M`**.

@@ -1,5 +1,22 @@
 # Changelogs
 
+## 2026-04-25 - Version 8.24
+- **Sidebar hidden by default on `/dashboard/course/*`**:
+    - The course-page sidebar is now collapsed on first visit and persists its own state (`courseSidebarHidden`, default `true`) — separate from the global `sidebarHidden` used on `/dashboard`, `/lesson/`, `/exam/`.
+    - `H` shortcut still toggles; the choice is now remembered per-context, so hiding the course sidebar no longer affects the dashboard sidebar (and vice versa).
+    - SPA navigation between course and dashboard pages re-applies the correct default automatically.
+- **New: header sidebar toggle button** on `/dashboard/course/*`:
+    - Gradient-blue `☰` button (`from-[#1068B9] → to-[#11509F]`) inserted into the top taskbar's right-side controls (before 📊 / theme / avatar).
+    - Click is equivalent to pressing `H`.
+- **New: module quick-nav buttons in the top taskbar** (dashboard family pages):
+    - One icon button per scanned course, rendered next to the existing 📊/theme controls.
+    - Each button shows the module's own SVG icon (captured on first dashboard scan, with backfill into existing saved entries).
+    - A tiny blue `press=[N]` indicator sits in the bottom-left corner, mirroring the `1`–`9` keyboard shortcut (matches the `press=[N]` decoration already shown in the sidebar/dashboard).
+    - Clicking navigates straight to the module's course page.
+    - The first button is the Dashboard itself (indicator `0`, always visible) — clicking is equivalent to pressing `0` twice (instant navigation, no confirm needed).
+- `scanAndSaveCourses` now captures the module's SVG icon (`extractModuleIconSvg`) and merges into existing saved entries so older saves don't lose their text and gain icons on the next dashboard visit.
+- Shortcuts help (`Shift + ?`) updated to document the new header buttons.
+
 ## 2026-04-25 - Version 8.23
 - Fixed **Sidebar `H` shortcut** requiring two presses on first page load:
     - `toggleSidebar()` now derives the toggle direction from the live DOM (`style.display`) instead of the stored boolean, so saved state and DOM can never desync.

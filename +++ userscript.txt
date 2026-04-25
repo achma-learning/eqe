@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.23
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
+// @version      8.24
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar (hidden by default on course page) • Header sidebar toggle button • Module quick-nav buttons in top taskbar with press=[1-9] indicators • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -40,6 +40,7 @@
         islandLeft:          GM_getValue('islandLeft',          '50%'),
         autoSelectOnTimeout: GM_getValue('autoSelectOnTimeout', true),
         sidebarHidden:       GM_getValue('sidebarHidden',       false),
+        courseSidebarHidden: GM_getValue('courseSidebarHidden', true),    // NEW: course page sidebar hidden by default
         courseImagesHidden:  GM_getValue('courseImagesHidden',  true),
         courseCompact:       GM_getValue('courseCompact',       true),
         statsPanelHidden:    GM_getValue('statsPanelHidden',    true),   // NEW: hide stats panel by default
@@ -366,6 +367,32 @@
     // COURSE SWITCHER
     // ============================================================================
 
+    function extractModuleIconSvg(link) {
+        // Dashboard course card layout: <div class="rounded-md ... bg-gradient-to-r"><svg .../></div>
+        // Sidebar layout:               <div class="relative z-10 ..."><svg .../><span>Name</span></div>
+        // Fallback: first <svg> inside the link.
+        const candidate =
+            link.querySelector('.rounded-md.bg-gradient-to-r > svg') ||
+            link.querySelector('div.relative.z-10 > svg') ||
+            link.querySelector('svg');
+        if (!candidate) return '';
+        // Clone & strip sizing classes/attrs so we can render at our own size.
+        const clone = candidate.cloneNode(true);
+        clone.removeAttribute('width');
+        clone.removeAttribute('height');
+        clone.removeAttribute('style');
+        // Drop tailwind size-* classes (size-5, size-10, etc.) and color text-* classes.
+        if (clone.getAttribute('class')) {
+            const filtered = clone.getAttribute('class')
+                .split(/\s+/)
+                .filter(c => c && !/^size-\d+$/.test(c) && !/^h-\d+$/.test(c) && !/^w-\d+$/.test(c))
+                .join(' ');
+            if (filtered) clone.setAttribute('class', filtered);
+            else clone.removeAttribute('class');
+        }
+        return clone.outerHTML;
+    }
+
     function scanAndSaveCourses() {
         const courseLinks   = document.querySelectorAll('a[href*="/dashboard/course/"]');
         const uniqueCourses = [], seenNames = new Set(), seenIds = new Set();
@@ -375,12 +402,22 @@
             let name      = nameEl ? nameEl.innerText.trim() : 'Unknown Module';
             name          = name.replace(/^(key=\d+|press=\[\d+\])\s+/, '');
             const norm    = name.toLowerCase();
+            const icon    = extractModuleIconSvg(link);
             if (!seenIds.has(id) && !seenNames.has(norm)) {
                 seenIds.add(id); seenNames.add(norm);
-                uniqueCourses.push({ name, url: link.href, id });
+                uniqueCourses.push({ name, url: link.href, id, icon });
             }
         });
-        if (uniqueCourses.length > 0) GM_setValue('saved_courses', uniqueCourses);
+        if (uniqueCourses.length > 0) {
+            // Merge icons into existing entries (in case icons weren't captured before).
+            const existing = GM_getValue('saved_courses', []);
+            const merged   = uniqueCourses.map(c => {
+                if (c.icon) return c;
+                const old = existing.find(o => o.id === c.id);
+                return old?.icon ? { ...c, icon: old.icon } : c;
+            });
+            GM_setValue('saved_courses', merged);
+        }
     }
 
     function decorateDashboardModules() {
@@ -785,6 +822,142 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
+    // HEADER SIDEBAR TOGGLE BUTTON (course page) (NEW)
+    // ============================================================================
+    //
+    // Inserts a gradient-styled hamburger button in the top taskbar so the
+    // sidebar can be toggled with a click — the H key still works as before.
+    //
+    function injectHeaderSidebarToggle() {
+        if (!isOnCoursePage()) return;
+        if (document.getElementById('eqe-header-sidebar-toggle')) return;
+        const buttonGroup = document.querySelector('div.flex.items-center.gap-4');
+        if (!buttonGroup) return;
+
+        const btn = document.createElement('button');
+        btn.id    = 'eqe-header-sidebar-toggle';
+        btn.className = 'bg-gradient-to-r from-[#1068B9] to-[#11509F] h-9 w-9 flex items-center justify-center text-white rounded-md shadow-xs transition-all hover:opacity-90 hover:scale-105 active:scale-95';
+        btn.title  = 'Toggle Sidebar (H)';
+        btn.style.cursor = 'pointer';
+        btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleSidebar();
+        });
+
+        // Place it as the first child of the right-side button group, before
+        // the existing 📊 stats / theme / avatar controls.
+        buttonGroup.insertBefore(btn, buttonGroup.firstChild);
+    }
+
+    // ============================================================================
+    // MODULE QUICK-NAV BUTTONS IN TOP TASKBAR (NEW)
+    // ============================================================================
+    //
+    // For each scanned course module, render a small icon button in the top
+    // taskbar. A tiny blue press=[N] indicator sits in the bottom-left corner
+    // mirroring the same N as the keyboard shortcut on the dashboard. The
+    // first button is the Dashboard itself (always visible, indicator "0").
+    //
+    const DASHBOARD_NAV_ICON =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>';
+
+    function buildModuleNavItems() {
+        const courses = GM_getValue('saved_courses', []);
+        const items = [{
+            num:   '0',
+            icon:  DASHBOARD_NAV_ICON,
+            title: 'Dashboard (press 0 twice)',
+            url:   'https://www.e-qe.online/dashboard',
+            isDashboard: true
+        }];
+        // 1-9 mirror the keyboard shortcut range
+        courses.slice(0, 9).forEach((c, i) => {
+            items.push({
+                num:   String(i + 1),
+                icon:  c.icon || `<span style="font-size:11px;font-weight:700;font-family:sans-serif;">${(c.name || '?').slice(0, 2).toUpperCase()}</span>`,
+                title: `${c.name} (press ${i + 1})`,
+                url:   c.url,
+                isDashboard: false
+            });
+        });
+        return items;
+    }
+
+    function renderModuleNavButtons(container, items) {
+        // Dataset signature avoids re-rendering on every observer tick.
+        const sig = items.map(it => `${it.num}:${it.url}`).join('|');
+        if (container.dataset.sig === sig) return;
+        container.dataset.sig = sig;
+        container.innerHTML = '';
+
+        items.forEach(it => {
+            const b = document.createElement('button');
+            b.className = 'eqe-module-nav-btn';
+            b.title     = it.title;
+            b.dataset.url = it.url;
+            b.style.cssText = [
+                'position:relative',
+                'width:36px','height:36px',
+                'display:inline-flex','align-items:center','justify-content:center',
+                'border-radius:8px',
+                'background:transparent',
+                'border:1px solid rgba(128,128,128,0.25)',
+                'cursor:pointer',
+                'transition:all 0.15s',
+                'color:inherit',
+                'padding:0',
+                'flex-shrink:0'
+            ].join(';');
+            b.innerHTML =
+                `<span class="eqe-mn-icon" style="display:flex;align-items:center;justify-content:center;width:22px;height:22px;line-height:1;color:inherit;">${it.icon}</span>` +
+                `<span class="eqe-mn-num"  style="position:absolute;bottom:0;left:2px;font-size:9px;font-weight:700;color:#1793d1;line-height:1;pointer-events:none;font-family:monospace;">${it.num}</span>`;
+            // Normalize SVG sizing (the captured icons are originally size-5/size-10).
+            b.querySelectorAll('svg').forEach(svg => {
+                svg.setAttribute('width', '20');
+                svg.setAttribute('height', '20');
+                svg.style.maxWidth  = '20px';
+                svg.style.maxHeight = '20px';
+            });
+            b.addEventListener('mouseenter', () => {
+                b.style.background = 'rgba(128,128,128,0.12)';
+                b.style.transform  = 'scale(1.05)';
+            });
+            b.addEventListener('mouseleave', () => {
+                b.style.background = 'transparent';
+                b.style.transform  = 'scale(1)';
+            });
+            b.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = it.url;
+            });
+            container.appendChild(b);
+        });
+    }
+
+    function injectModuleNavButtons() {
+        // Only on /dashboard family pages — the top taskbar exists there.
+        if (!window.location.href.includes('/dashboard')) return;
+        const buttonGroup = document.querySelector('div.flex.items-center.gap-4');
+        if (!buttonGroup) return;
+        const header = buttonGroup.parentElement;
+        if (!header) return;
+
+        let container = document.getElementById('eqe-module-nav-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'eqe-module-nav-container';
+            container.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;margin-right:8px;';
+            // Insert as a sibling between left and right groups.
+            header.insertBefore(container, buttonGroup);
+        }
+
+        renderModuleNavButtons(container, buildModuleNavItems());
+    }
+
+    // ============================================================================
     // SHORTCUTS HELP OVERLAY (updated)
     // ============================================================================
 
@@ -825,7 +998,7 @@ a[href*="/exam/"]   .mt-auto {
             <div style="margin-bottom:20px;">
                 <h4 style="font-size:16px;margin-bottom:10px;color:#3b82f6;">Script Features</h4>
                 <ul style="list-style:none;padding:0;margin:0;line-height:1.8;">
-                    <li>${kbd('H')} : Toggle Sidebar (works on course page too)</li>
+                    <li>${kbd('H')} : Toggle Sidebar (hidden by default on course page)</li>
                     <li>${kbd('F')} : Enter Fullscreen <em style="font-size:11px;opacity:0.7;">(press F twice to exit)</em></li>
                     <li>${kbd('I')} : View Image</li>
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
@@ -850,6 +1023,8 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('Enter')} (course page) : Open focused card</li>
                     <li>${kbd('R')} (course page) : Reset focused lesson progress (press twice to confirm)</li>
                     <li>📊 Button (header) : Toggle course statistics panel</li>
+                    <li>☰ Button (header, course page) : Toggle Sidebar</li>
+                    <li>Module Buttons (header) : Click any module icon to jump there — bottom-left number = press shortcut</li>
                 </ul>
             </div>
             <p style="margin:20px 0 0 0;font-size:13px;opacity:0.7;text-align:center;font-style:italic;">Click background or press [Esc] to close</p>`;
@@ -987,6 +1162,10 @@ a[href*="/exam/"]   .mt-auto {
         'aside.h-full.xl\\:w-\\[300px\\], ' +           // alternative dashboard sidebar
         'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'; // course page module sidebar
 
+    function isOnCoursePage() {
+        return window.location.href.includes('/dashboard/course/');
+    }
+
     function toggleSidebar() {
         const sidebar = document.querySelector(SIDEBAR_SELECTOR);
         if (!sidebar) return;
@@ -996,9 +1175,24 @@ a[href*="/exam/"]   .mt-auto {
         const isCurrentlyHidden = sidebar.style.display === 'none';
         const newHidden = !isCurrentlyHidden;
         sidebar.style.display = newHidden ? 'none' : '';
-        config.sidebarHidden  = newHidden;
-        GM_setValue('sidebarHidden', newHidden);
+        // Persist preference per-context: course page has its own default
+        // (hidden) and shouldn't leak into dashboard/lesson/exam pages.
+        if (isOnCoursePage()) {
+            config.courseSidebarHidden = newHidden;
+            GM_setValue('courseSidebarHidden', newHidden);
+        } else {
+            config.sidebarHidden = newHidden;
+            GM_setValue('sidebarHidden', newHidden);
+        }
         showToast(newHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
+    }
+
+    function applySidebarHiddenStateForCurrentPage() {
+        const sidebar = document.querySelector(SIDEBAR_SELECTOR);
+        if (!sidebar) return false;
+        const wantHidden = isOnCoursePage() ? config.courseSidebarHidden : config.sidebarHidden;
+        sidebar.style.display = wantHidden ? 'none' : '';
+        return true;
     }
 
     // ============================================================================
@@ -2039,14 +2233,18 @@ a[href*="/exam/"]   .mt-auto {
         }
 
         injectInlineControls();
-        injectStatsToggleButton();   // NEW: add stats toggle button
+        injectStatsToggleButton();      // stats toggle button on course page
+        injectHeaderSidebarToggle();    // NEW: sidebar toggle in top taskbar (course page)
+        injectModuleNavButtons();       // NEW: module quick-nav buttons in top taskbar
 
-        // Apply saved sidebar hidden state (global and course page).
+        // Apply saved sidebar hidden state per-context. On /dashboard/course/
+        // the default is hidden; elsewhere it follows the global preference.
         // The sidebar is mounted asynchronously by Next.js, so retry via
         // MutationObserver if it's not in the DOM yet — otherwise the saved
         // state silently desyncs from the DOM and the H shortcut needs two
         // presses to take effect on first load.
-        if (config.sidebarHidden) {
+        const wantHiddenOnInit = isOnCoursePage() ? config.courseSidebarHidden : config.sidebarHidden;
+        if (wantHiddenOnInit) {
             const applyHidden = () => {
                 const sidebar = document.querySelector(SIDEBAR_SELECTOR);
                 if (sidebar) { sidebar.style.display = 'none'; return true; }
@@ -2105,6 +2303,8 @@ a[href*="/exam/"]   .mt-auto {
             attachVanillaNavListeners();
             applyCourseStyles();
             injectStatsToggleButton();       // ensure button exists after navigation
+            injectHeaderSidebarToggle();     // ensure sidebar toggle in top taskbar
+            injectModuleNavButtons();        // ensure module quick-nav buttons
             applyStatsPanelVisibility();     // reapply hiding on DOM changes
 
             const currentUrl = window.location.href;
@@ -2112,6 +2312,10 @@ a[href*="/exam/"]   .mt-auto {
                 state.lastUrl = currentUrl;
                 injectInlineControls();
                 courseFocusIndex = -1; // reset card focus on navigation
+                // SPA navigation between course pages and dashboard — re-apply
+                // the per-context sidebar default so users don't see the wrong
+                // visibility briefly after navigating.
+                applySidebarHiddenStateForCurrentPage();
             }
             if (currentUrl.includes('/dashboard')) {
                 scanAndSaveCourses();

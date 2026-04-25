@@ -8,7 +8,7 @@
 - **`1` – `9`** (On Dashboard) : Direct Module Navigation (Go to Course)
 
 ## Script Features
-- **`H`** : Toggle Sidebar Visibility
+- **`H`** : Toggle Sidebar Visibility (hidden by default on `/dashboard/course/*`)
 - **`I`** : View Image (Toggle modal if available)
 - **`P`** : Toggle Background Music (🔊/🔇)
 - **`C`** : Toggle Official/Community Answers
@@ -32,6 +32,15 @@
 - **`Enter`** / **`Space`** : Open focused lesson
 - **`R`** : Reset focused lesson progress (press twice within 3s to confirm)
 - **`S`** : Toggle Stats Panel
+
+## Top Taskbar Header (Dashboard family pages)
+- **Sidebar Toggle** (☰, gradient blue, course page only):
+    - **Click** : Toggle Sidebar Visibility (same as `H`)
+- **Module Quick-Nav Buttons**:
+    - Renders one button per scanned module with the module's icon.
+    - Tiny blue press=[N] indicator in the bottom-left mirrors the `1`–`9` keyboard shortcut.
+    - **Click** : Jump directly to that module's course page.
+    - First button (Dashboard, indicator `0`) is always visible — clicking it goes to `/dashboard` (same as pressing `0` twice).
 
 ## Inline Button Controls (Top Right)
 - **Loadout Button** (⭐/🏎️/📝):

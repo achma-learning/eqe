@@ -1,5 +1,23 @@
 # Changelogs
 
+## 2026-04-25 - Version 8.25
+- Fixed: course-page sidebar **wasn't actually hidden by default on cold
+  page loads** despite `courseSidebarHidden=true`. The previous
+  implementation set `style.display='none'` once and disconnected the
+  observer; Next.js remounts the `aside` after that point and the inline
+  style was lost.
+- Switched the course-page sidebar hide to an injected CSS rule
+  (`<style>aside.w-[280px].shrink-0.hidden.lg:flex{display:none !important;}</style>`)
+  via `applyCourseSidebarHide(hide)`. The rule survives remounts, so the
+  sidebar starts hidden whether you land on `/dashboard/course/...`
+  directly or arrive via SPA navigation.
+- `toggleSidebar()` on the course page now flips the CSS rule (source of
+  truth = `config.courseSidebarHidden`); on other pages it keeps the
+  existing inline-style behavior.
+- `applySidebarHiddenStateForCurrentPage()` also strips the course rule
+  when navigating away from `/dashboard/course/*`, so the dashboard and
+  lesson/exam sidebars are never collateral damage.
+
 ## 2026-04-25 - Version 8.24
 - **Sidebar hidden by default on `/dashboard/course/*`**:
     - The course-page sidebar is now collapsed on first visit and persists its own state (`courseSidebarHidden`, default `true`) — separate from the global `sidebarHidden` used on `/dashboard`, `/lesson/`, `/exam/`.

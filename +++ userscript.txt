@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.24
+// @version      8.25
 // @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar (hidden by default on course page) • Header sidebar toggle button • Module quick-nav buttons in top taskbar with press=[1-9] indicators • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -1162,36 +1162,76 @@ a[href*="/exam/"]   .mt-auto {
         'aside.h-full.xl\\:w-\\[300px\\], ' +           // alternative dashboard sidebar
         'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'; // course page module sidebar
 
+    // Selector used by the CSS rule that hides the course-page sidebar. Kept
+    // as a string (without escapes) for the CSS rule body — Tailwind's
+    // bracket notation needs to be escaped at the CSS level.
+    const COURSE_SIDEBAR_CSS_SELECTOR = 'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex';
+    const COURSE_SIDEBAR_HIDE_STYLE_ID = 'eqe-course-sidebar-hide-style';
+
     function isOnCoursePage() {
         return window.location.href.includes('/dashboard/course/');
     }
 
+    // Hides the course-page sidebar via an injected CSS rule. This is
+    // resilient to React/Next.js remounting the aside after init (which is
+    // why a one-shot inline style.display='none' can come back as visible
+    // when the user navigates straight to /dashboard/course/...).
+    function applyCourseSidebarHide(hide) {
+        const existing = document.getElementById(COURSE_SIDEBAR_HIDE_STYLE_ID);
+        if (hide) {
+            if (!existing) {
+                const s = document.createElement('style');
+                s.id = COURSE_SIDEBAR_HIDE_STYLE_ID;
+                s.textContent = `${COURSE_SIDEBAR_CSS_SELECTOR}{display:none !important;}`;
+                document.head.appendChild(s);
+            }
+        } else {
+            existing?.remove();
+        }
+    }
+
     function toggleSidebar() {
+        if (isOnCoursePage()) {
+            // Course page: drive visibility through the injected CSS rule so
+            // remounts can't bring the sidebar back. Source of truth is the
+            // saved boolean — which the rule mirrors exactly.
+            const newHidden = !config.courseSidebarHidden;
+            config.courseSidebarHidden = newHidden;
+            GM_setValue('courseSidebarHidden', newHidden);
+            applyCourseSidebarHide(newHidden);
+            // Also clear any inline display on the live element so showing
+            // works whether or not the rule was previously active.
+            const sidebar = document.querySelector(SIDEBAR_SELECTOR);
+            if (sidebar && !newHidden) sidebar.style.display = '';
+            showToast(newHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
+            return;
+        }
+
+        // Dashboard / lesson / exam pages keep the original inline-style
+        // approach (with intent derived from the live DOM to avoid the
+        // "first press does nothing" bug).
         const sidebar = document.querySelector(SIDEBAR_SELECTOR);
         if (!sidebar) return;
-        // Derive intent from the live DOM, not the stored boolean — avoids the
-        // "first press does nothing" bug when saved state and DOM are out of sync
-        // (e.g. sidebar mounted after init).
         const isCurrentlyHidden = sidebar.style.display === 'none';
         const newHidden = !isCurrentlyHidden;
         sidebar.style.display = newHidden ? 'none' : '';
-        // Persist preference per-context: course page has its own default
-        // (hidden) and shouldn't leak into dashboard/lesson/exam pages.
-        if (isOnCoursePage()) {
-            config.courseSidebarHidden = newHidden;
-            GM_setValue('courseSidebarHidden', newHidden);
-        } else {
-            config.sidebarHidden = newHidden;
-            GM_setValue('sidebarHidden', newHidden);
-        }
+        config.sidebarHidden = newHidden;
+        GM_setValue('sidebarHidden', newHidden);
         showToast(newHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
     }
 
     function applySidebarHiddenStateForCurrentPage() {
+        if (isOnCoursePage()) {
+            applyCourseSidebarHide(config.courseSidebarHidden);
+            return true;
+        }
+        // Non-course pages: ensure the course-page CSS rule isn't lingering
+        // from a prior route, then mirror the saved global preference onto
+        // the live aside.
+        applyCourseSidebarHide(false);
         const sidebar = document.querySelector(SIDEBAR_SELECTOR);
         if (!sidebar) return false;
-        const wantHidden = isOnCoursePage() ? config.courseSidebarHidden : config.sidebarHidden;
-        sidebar.style.display = wantHidden ? 'none' : '';
+        sidebar.style.display = config.sidebarHidden ? 'none' : '';
         return true;
     }
 
@@ -2237,14 +2277,16 @@ a[href*="/exam/"]   .mt-auto {
         injectHeaderSidebarToggle();    // NEW: sidebar toggle in top taskbar (course page)
         injectModuleNavButtons();       // NEW: module quick-nav buttons in top taskbar
 
-        // Apply saved sidebar hidden state per-context. On /dashboard/course/
-        // the default is hidden; elsewhere it follows the global preference.
-        // The sidebar is mounted asynchronously by Next.js, so retry via
-        // MutationObserver if it's not in the DOM yet — otherwise the saved
-        // state silently desyncs from the DOM and the H shortcut needs two
-        // presses to take effect on first load.
-        const wantHiddenOnInit = isOnCoursePage() ? config.courseSidebarHidden : config.sidebarHidden;
-        if (wantHiddenOnInit) {
+        // Apply saved sidebar hidden state per-context.
+        // - On /dashboard/course/* we inject a CSS rule (via
+        //   applyCourseSidebarHide) so the hide survives Next.js remounting
+        //   the aside element after init. Default is hidden.
+        // - Elsewhere we keep the inline-style approach with a
+        //   MutationObserver fallback for late hydration, mirroring the
+        //   global sidebarHidden preference.
+        if (isOnCoursePage()) {
+            applyCourseSidebarHide(config.courseSidebarHidden);
+        } else if (config.sidebarHidden) {
             const applyHidden = () => {
                 const sidebar = document.querySelector(SIDEBAR_SELECTOR);
                 if (sidebar) { sidebar.style.display = 'none'; return true; }

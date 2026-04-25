@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.22
+// @version      8.23
 // @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • F fullscreen • P pomo (persists across pages) • V copy prompt • Shift+V AI menu • S stats toggle • Arrow card nav on course • Auto-expand sections • Preset island colors • Question counter
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -635,7 +635,10 @@ a[href*="/exam/"]   .mt-auto {
         const cards = getCourseCards();
         if (cards.length === 0) return false;
 
-        const key = e.key;
+        // Lower-case single-char keys so shortcuts work regardless of CapsLock /
+        // Shift (e.g. "r" and "R" both reset). Multi-char keys like "Enter",
+        // "ArrowRight" stay untouched.
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
 
         if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(key)) {
             e.preventDefault(); e.stopImmediatePropagation();
@@ -668,7 +671,7 @@ a[href*="/exam/"]   .mt-auto {
             return true;
         }
 
-        if ((key === 'r' || key === 'R') && courseFocusIndex >= 0) {
+        if (key === 'r' && courseFocusIndex >= 0) {
             e.preventDefault(); e.stopImmediatePropagation();
             const card = cards[courseFocusIndex];
             // Find reset button by SVG class or text — first <button> isn't always the reset one.
@@ -979,18 +982,23 @@ a[href*="/exam/"]   .mt-auto {
     // SIDEBAR TOGGLE (updated for course page)
     // ============================================================================
 
+    const SIDEBAR_SELECTOR =
+        'aside.h-full.lg\\:w-\\[270px\\], ' +           // main dashboard sidebar
+        'aside.h-full.xl\\:w-\\[300px\\], ' +           // alternative dashboard sidebar
+        'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'; // course page module sidebar
+
     function toggleSidebar() {
-        // Match both the global app sidebar and the course module sidebar
-        const sidebar = document.querySelector(
-            'aside.h-full.lg\\:w-\\[270px\\], ' +           // main dashboard sidebar
-            'aside.h-full.xl\\:w-\\[300px\\], ' +           // alternative dashboard sidebar
-            'aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'   // course page module sidebar
-        );
+        const sidebar = document.querySelector(SIDEBAR_SELECTOR);
         if (!sidebar) return;
-        config.sidebarHidden = !config.sidebarHidden;
-        GM_setValue('sidebarHidden', config.sidebarHidden);
-        sidebar.style.display = config.sidebarHidden ? 'none' : '';
-        showToast(config.sidebarHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
+        // Derive intent from the live DOM, not the stored boolean — avoids the
+        // "first press does nothing" bug when saved state and DOM are out of sync
+        // (e.g. sidebar mounted after init).
+        const isCurrentlyHidden = sidebar.style.display === 'none';
+        const newHidden = !isCurrentlyHidden;
+        sidebar.style.display = newHidden ? 'none' : '';
+        config.sidebarHidden  = newHidden;
+        GM_setValue('sidebarHidden', newHidden);
+        showToast(newHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
     }
 
     // ============================================================================
@@ -2033,12 +2041,25 @@ a[href*="/exam/"]   .mt-auto {
         injectInlineControls();
         injectStatsToggleButton();   // NEW: add stats toggle button
 
-        // Apply saved sidebar hidden state (global and course page)
+        // Apply saved sidebar hidden state (global and course page).
+        // The sidebar is mounted asynchronously by Next.js, so retry via
+        // MutationObserver if it's not in the DOM yet — otherwise the saved
+        // state silently desyncs from the DOM and the H shortcut needs two
+        // presses to take effect on first load.
         if (config.sidebarHidden) {
-            const sidebar = document.querySelector(
-                'aside.h-full.lg\\:w-\\[270px\\], aside.h-full.xl\\:w-\\[300px\\], aside.w-\\[280px\\].shrink-0.hidden.lg\\:flex'
-            );
-            if (sidebar) sidebar.style.display = 'none';
+            const applyHidden = () => {
+                const sidebar = document.querySelector(SIDEBAR_SELECTOR);
+                if (sidebar) { sidebar.style.display = 'none'; return true; }
+                return false;
+            };
+            if (!applyHidden()) {
+                const sidebarObs = new MutationObserver(() => {
+                    if (applyHidden()) sidebarObs.disconnect();
+                });
+                sidebarObs.observe(document.body, { childList: true, subtree: true });
+                registerObserver(sidebarObs);
+                registerTimeout(setTimeout(() => sidebarObs.disconnect(), 10000));
+            }
         }
 
         // Resume pomo timer if it was running before page change (#24)

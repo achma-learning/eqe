@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.1.1
+// @version      0.1.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -232,9 +232,54 @@
         return m ? `Exam ${m[1].slice(0, 8)}` : 'Exam';
     }
 
+    // Mirrors the main userscript's `scanAndSaveCourses` lookup chain
+    // (+++ userscript.txt:396) so the module name we write to disk matches
+    // what the rest of the toolchain calls the module.
+    //
+    // Lookup order:
+    //   1. `saved_courses` GM storage (populated by the main userscript when
+    //      the dashboard is visited) — keyed by the course UUID in the URL.
+    //   2. Any `a[href*="/dashboard/course/"]` link on the current page,
+    //      using the same h4 → h3 → span fallback and the same prefix strip
+    //      (`key=N` / `press=[N]`) used by `scanAndSaveCourses`.
+    //   3. The page's own h1 (the course-page header).
+    //   4. `document.title` minus the trailing " | site" suffix.
+    const NAV_PREFIX_RE = /^(key=\d+|press=\[\d+\])\s+/;
+
     function getCourseModuleName() {
+        const curId = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
+
+        // 1. saved_courses GM storage (shared with the main userscript).
+        if (curId) {
+            try {
+                const saved = GM_getValue('saved_courses', []);
+                const hit = Array.isArray(saved) ? saved.find(c => c?.id === curId) : null;
+                if (hit?.name) return hit.name.replace(NAV_PREFIX_RE, '').trim();
+            } catch { /* ignore corrupted storage */ }
+        }
+
+        // 2. Same selector chain as scanAndSaveCourses, scoped to the link
+        //    pointing at the current course (or the only one if curId is
+        //    missing — e.g. on an exam page where the sidebar logo links
+        //    back to the parent course).
+        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
+        for (const link of courseLinks) {
+            const id = link.href.split('/').pop().split('?')[0].split('#')[0];
+            if (curId && id !== curId) continue;
+            const nameEl = link.querySelector('h4') ||
+                           link.querySelector('h3') ||
+                           link.querySelector('span');
+            if (!nameEl) continue;
+            const name = nameEl.innerText.trim().replace(NAV_PREFIX_RE, '').trim();
+            if (name && !/^unknown/i.test(name)) return name;
+        }
+
+        // 3. Course-page heading.
         const h1 = document.querySelector('h1');
-        if (h1?.textContent?.trim()) return h1.textContent.trim();
+        const h1txt = h1?.textContent?.trim().replace(NAV_PREFIX_RE, '').trim();
+        if (h1txt) return h1txt;
+
+        // 4. <title>.
         const title = document.title.replace(/\s*\|.*$/, '').trim();
         return title || 'Course';
     }

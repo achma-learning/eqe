@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.2.0
+// @version      0.3.0
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -355,9 +355,37 @@
     // OUTPUT FORMATTING
     // ============================================================================
 
+    // Per-exam totals + the "between <first> to <last>" range. We keep the
+    // exam order as discovered on the course page (which usually goes
+    // newest-first, e.g. 2026 normal -> 2016 rattrapage).
+    function buildSummary(job) {
+        const entries  = Object.entries(job.data);
+        const total    = entries.reduce((s, [, b]) => s + (b.questions?.length || 0), 0);
+        const titles   = entries.map(([t]) => t);
+        const lines    = [];
+
+        let header = `total number of question = ${total}`;
+        if (titles.length >= 2) {
+            header += `, between ${titles[0]} to ${titles[titles.length - 1]}`;
+        } else if (titles.length === 1) {
+            header += ` (${titles[0]})`;
+        }
+        lines.push(header);
+        lines.push('');
+
+        entries.forEach(([title, block]) => {
+            const n = block.questions?.length || 0;
+            lines.push(`${title} = ${n} Question${n === 1 ? '' : 's'}`);
+        });
+
+        return lines;
+    }
+
     function buildMarkdown(job) {
         const lines = [];
         lines.push(`# ${job.module}`);
+        lines.push('');
+        lines.push(...buildSummary(job));
         lines.push('');
 
         const examEntries = Object.entries(job.data);
@@ -386,6 +414,8 @@
         // the user's spec "like in original page".
         const lines = [];
         lines.push(job.module);
+        lines.push('');
+        lines.push(...buildSummary(job));
         lines.push('');
 
         for (const [examTitle, block] of Object.entries(job.data)) {

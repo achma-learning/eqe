@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -176,23 +176,58 @@
         return { text, props };
     }
 
-    // The exam page often shows a small heading like "Octobre 2024" or
-    // "normal 2026" near the question. We try a few selectors and fall back
-    // to "Exam <shortId>".
+    // The exam page shows a heading like "normal 2026 Q1" or "Octobre 2024 Q3"
+    // right above each question — we strip the "Q<n>" suffix to get the exam
+    // title. Fallback chain:
+    //   1. Any element whose text matches "<title> Q<digits>"
+    //   2. The middle item of the breadcrumb (e.g. "normal 2026")
+    //   3. The sidebar's exam-name header
+    //   4. "Exam <shortId>" from the URL
     function getExamTitle(fallbackUrl) {
-        const candidates = [
-            'h1',
-            'header h2',
-            '[class*="exam"] h1',
-            '[class*="exam"] h2',
-        ];
-        for (const sel of candidates) {
-            const el = document.querySelector(sel);
-            const txt = el?.textContent?.trim();
-            if (txt && txt.length > 0 && txt.length < 80 && txt !== getQuestionEl()?.textContent?.trim()) {
-                return txt;
+        const Q_SUFFIX_RE = /^(.+?)\s+Q\s*\d+\s*$/i;
+
+        // 1) Find the "<title> Q<n>" heading. Start with proper heading tags
+        //    and title-classed elements, then fall back to leaf spans/divs.
+        const questionText = getQuestionEl()?.textContent?.trim();
+        const tryMatch = (sel) => {
+            const matches = [];
+            document.querySelectorAll(sel).forEach(el => {
+                if (el.children.length > 3) return;
+                const txt = el.textContent?.trim();
+                if (!txt || txt.length > 80 || txt === questionText) return;
+                const m = txt.match(Q_SUFFIX_RE);
+                if (m && m[1].trim().length > 0) matches.push(m[1].trim());
+            });
+            // Prefer the shortest title — that's the most specific element,
+            // not a wrapping container.
+            return matches.sort((a, b) => a.length - b.length)[0] || null;
+        };
+        const fromHeading = tryMatch('h1, h2, h3, h4, h5, [class*="title"], [class*="heading"]')
+                         || tryMatch('span, p, div');
+        if (fromHeading) return fromHeading;
+
+        // 2) Breadcrumb: <a>module</a> / <a>exam</a> / <a>section</a>
+        //    On e-qe.online breadcrumb anchors have hrefs to /dashboard/course
+        //    and /exam respectively. Pick the one that points at /exam/.
+        const breadcrumbExam = document.querySelector('a[href*="/exam/"]:not([href*="/dashboard/"])');
+        const bcTxt = breadcrumbExam?.textContent?.trim();
+        if (bcTxt && bcTxt.length > 0 && bcTxt.length < 80) return bcTxt;
+
+        // 3) Sidebar exam-name header. The progress bar's sibling header
+        //    typically contains the exam title (e.g. "normal 2026 0%").
+        //    Strip a trailing "<digits>%".
+        const sidebar = document.querySelector('aside, nav[class*="sidebar"]');
+        if (sidebar) {
+            const headers = sidebar.querySelectorAll('h1, h2, h3, h4, [class*="title"]');
+            for (const el of headers) {
+                let txt = el.textContent?.trim();
+                if (!txt) continue;
+                txt = txt.replace(/\s*\d+\s*%\s*$/, '').trim();
+                if (txt.length > 0 && txt.length < 80) return txt;
             }
         }
+
+        // 4) Last resort: short hash of the URL UUID.
         const m = (fallbackUrl || location.href).match(/\/exam\/([0-9a-f-]+)/i);
         return m ? `Exam ${m[1].slice(0, 8)}` : 'Exam';
     }

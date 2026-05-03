@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.3.2
+// @version      0.4.0
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -33,9 +33,34 @@
     const QUESTION_WAIT_MS   = 8000;
     // How often we poll the DOM while waiting for a new question.
     const POLL_MS            = 200;
+    // Two-read stability gap. The page sometimes renders answer buttons
+    // before the question text settles ("Loading…" → real text). We capture
+    // only when the text reads identically twice this far apart.
+    const STABILITY_DELAY_MS = 250;
+    // Pause after clicking next or a sidebar Q-link.
+    const POST_CLICK_PAUSE_MS = 200;
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
+
+    // Question texts that mean "the page hasn't finished loading yet" —
+    // never count these as a real question. Without this filter, the
+    // placeholder is captured as Q1 and then the real text triggers an
+    // extra ghost capture (the "51/50" symptom).
+    const PLACEHOLDER_RES = [
+        /^loading\.*$/i,
+        /^chargement\.*$/i,
+        /^\.{2,}$/,
+        /^…$/,
+        /^…\.*$/,
+        /^skeleton$/i,
+    ];
+    function isPlaceholderText(t) {
+        if (!t) return true;
+        const trimmed = t.trim();
+        if (trimmed.length < 5) return true;
+        return PLACEHOLDER_RES.some(re => re.test(trimmed));
+    }
 
     // ============================================================================
     // SELECTORS  (mirrored from +++ userscript.txt — keep in sync)
@@ -59,6 +84,77 @@
             /next|suivant/i.test(b.textContent || '')
         );
 
+    // Current Q-number indicator from the DOM:
+    //   <div class="text-sm font-black border-b border-white/10 pb-1.5 leading-none ...">2</div>
+    // We match by the distinctive class combo (text-sm + font-black) and
+    // require the text to be a bare integer. This is much more reliable
+    // than scraping it from a heading regex.
+    function getCurrentQuestionNumber() {
+        const nodes = document.querySelectorAll('div.text-sm.font-black');
+        const matches = [];
+        nodes.forEach(el => {
+            if (el.children.length > 0) return;
+            const txt = el.textContent?.trim();
+            if (!/^\d+$/.test(txt || '')) return;
+            const n = parseInt(txt, 10);
+            if (n >= 1 && n <= 999) matches.push({ n, el });
+        });
+        if (matches.length === 0) return null;
+        // If multiple match, prefer the one not inside aside/nav (the
+        // big indicator next to the question, not a sidebar Q-list item).
+        const main = matches.find(m => !m.el.closest('aside, nav, [class*="sidebar"]'));
+        return (main || matches[0]).n;
+    }
+
+    // Total questions in the exam. The "current Qn" indicator usually has
+    // a sibling with the total ("1" on top, "50" below, separated by a
+    // border). We pick the largest sibling-integer in the same parent.
+    // Falls back to the sidebar's "n / N" indicator.
+    function getTotalQuestions() {
+        const nodes = document.querySelectorAll('div.text-sm.font-black');
+        for (const el of nodes) {
+            if (el.children.length > 0) continue;
+            const txt = el.textContent?.trim();
+            if (!/^\d+$/.test(txt || '')) continue;
+            const parent = el.parentElement;
+            if (!parent) continue;
+            const sibInts = Array.from(parent.children)
+                .filter(c => c !== el && c.children.length === 0)
+                .map(c => c.textContent?.trim())
+                .filter(t => /^\d+$/.test(t || ''))
+                .map(t => parseInt(t, 10))
+                .filter(n => n > 1 && n < 500);
+            if (sibInts.length > 0) return Math.max(...sibInts);
+        }
+        // Sidebar fallback: scan for "n / N".
+        const sidebar = document.querySelector('aside') || document.body;
+        const cands = sidebar.querySelectorAll('button, a, li, div, span');
+        for (const el of cands) {
+            if (el.children.length > 0) continue;
+            const m = el.textContent?.trim().match(/^\s*\d+\s*\/\s*(\d+)\s*$/);
+            if (m) {
+                const n = parseInt(m[1], 10);
+                if (n > 0 && n < 500) return n;
+            }
+        }
+        return null;
+    }
+
+    // Find the sidebar's clickable item for question number `n`.
+    // Used by the gap-fill pass to navigate directly to a missed question.
+    function getSidebarQLink(n) {
+        const sidebar = document.querySelector('aside') || document.body;
+        const cands = sidebar.querySelectorAll('button, a, li, div, span');
+        for (const el of cands) {
+            if (el.children.length > 4) continue;
+            const m = el.textContent?.trim().match(/^Q\s*(\d+)$/i);
+            if (m && parseInt(m[1], 10) === n) {
+                return el.closest('button, a') || el;
+            }
+        }
+        return null;
+    }
+
     // ============================================================================
     // JOB STATE  (persisted across page navigations via GM storage)
     // ============================================================================
@@ -70,9 +166,16 @@
     //   exams: [{ url, title }, ...],   // discovered on the course page
     //   currentExamIndex: 0,
     //   data: {                          // exam title -> scraped block
-    //     "Octobre 2024": { url, questions: [{ text, props: ["A]...","B]..."] }] }
+    //     "Octobre 2024": {
+    //       url,
+    //       total: 50,                   // discovered from the page indicator
+    //       questions: [                 // capture order; each tagged with qn
+    //         { qn: 1, text, props, prevText: null,    nextText: "..." },
+    //         { qn: 2, text, props, prevText: "...",   nextText: "..." },
+    //         ...
+    //       ]
+    //     }
     //   },
-    //   lastQuestionText: null,          // for change-detection across clicks
     //   currentExamCount: 0,             // questions captured for current exam
     // }
     function loadJob() {
@@ -156,7 +259,10 @@
         const qEl = getQuestionEl();
         if (!qEl) return null;
         const text = qEl.textContent.trim();
-        if (text.length < 5) return null;
+        // Skip placeholder/loading text — without this filter, "Loading…" is
+        // captured as Q1 and then the real text triggers a ghost re-capture
+        // on the same question (the 51/50 symptom in the H-O dump).
+        if (isPlaceholderText(text)) return null;
 
         const btns = getAnswerButtons();
         if (btns.length === 0) return null;
@@ -173,7 +279,27 @@
             return `${label}] ${propText}`;
         });
 
-        return { text, props };
+        return { text, props, qn: getCurrentQuestionNumber() };
+    }
+
+    // Read the question, wait STABILITY_DELAY_MS, read again, only accept
+    // if both reads return identical text. Catches transient DOM states
+    // (mid-render swaps, "Loading…" → real text) that v0.1.2 would have
+    // mistakenly counted as separate questions.
+    async function captureStableQuestion(timeoutMs = QUESTION_WAIT_MS) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const a = getCurrentQuestion();
+            if (!a) { await sleep(POLL_MS); continue; }
+            await sleep(STABILITY_DELAY_MS);
+            const b = getCurrentQuestion();
+            if (!b) continue;
+            if (a.text === b.text && a.props.length === b.props.length) {
+                // Use the second read's qn (might have settled later than text).
+                return { ...a, qn: b.qn ?? a.qn };
+            }
+        }
+        return null;
     }
 
     // The exam page shows a heading like "normal 2026 Q1" or "Octobre 2024 Q3"
@@ -307,11 +433,28 @@
         lines.push('');
 
         entries.forEach(([title, block]) => {
-            const n = block.questions?.length || 0;
-            lines.push(`${title} = ${n} Question${n === 1 ? '' : 's'}`);
+            const captured = block.questions?.length || 0;
+            const expected = block.total || captured;
+            const word = captured === 1 ? 'Question' : 'Questions';
+            if (expected && captured < expected) {
+                const missing = expected - captured;
+                lines.push(`${title} = ${captured}/${expected} ${word} (${missing} missing)`);
+            } else {
+                lines.push(`${title} = ${captured} ${word}`);
+            }
         });
 
         return lines;
+    }
+
+    // Sort captured questions by their real qn from the page indicator.
+    // Questions without a qn (rare — happens only if the indicator was
+    // missing on every read) are appended at the end in capture order.
+    function sortByQn(questions) {
+        const tagged = questions.filter(q => q.qn != null).slice()
+            .sort((a, b) => a.qn - b.qn);
+        const untagged = questions.filter(q => q.qn == null);
+        return tagged.concat(untagged);
     }
 
     function buildMarkdown(job) {
@@ -327,8 +470,9 @@
             lines.push('');
             lines.push(`## ${examTitle} : ${block.url}`);
             lines.push('');
-            block.questions.forEach((q, idx) => {
-                lines.push(`### ${examTitle} Q${idx + 1}`);
+            sortByQn(block.questions).forEach((q, idx) => {
+                const num = q.qn ?? (idx + 1);
+                lines.push(`### ${examTitle} Q${num}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -356,8 +500,9 @@
             lines.push('');
             lines.push(`${examTitle} : ${block.url}`);
             lines.push('');
-            block.questions.forEach((q, idx) => {
-                lines.push(`${examTitle} Q${idx + 1}`);
+            sortByQn(block.questions).forEach((q, idx) => {
+                const num = q.qn ?? (idx + 1);
+                lines.push(`${examTitle} Q${num}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -444,7 +589,6 @@
             exams,
             currentExamIndex: 0,
             data: {},
-            lastQuestionText: null,
             currentExamCount: 0,
         };
         saveJob(job);
@@ -454,6 +598,25 @@
     // ============================================================================
     // EXAM PAGE: SCRAPING LOOP
     // ============================================================================
+
+    // Helper: turn a flat array of captured questions into a map keyed by qn
+    // (questions without a qn are dropped for gap-detection purposes).
+    function indexByQn(arr) {
+        const out = {};
+        for (const q of arr) if (q && q.qn != null) out[q.qn] = q;
+        return out;
+    }
+
+    // Stitch prev/next text snippets onto each captured question. Used to
+    // detect duplicates and surface ordering bugs later if needed.
+    function stitchNeighbors(arr) {
+        const sorted = [...arr].sort((a, b) => (a.qn ?? 0) - (b.qn ?? 0));
+        for (let i = 0; i < sorted.length; i++) {
+            sorted[i].prevText = sorted[i - 1]?.text ?? null;
+            sorted[i].nextText = sorted[i + 1]?.text ?? null;
+        }
+        return sorted;
+    }
 
     async function runExamScrape() {
         const job = loadJob();
@@ -468,7 +631,7 @@
         injectProgressHud(job);
 
         await sleep(PAGE_SETTLE_MS);
-        const firstQuestion = await waitFor(getCurrentQuestion);
+        const firstQuestion = await captureStableQuestion(QUESTION_WAIT_MS);
         if (!firstQuestion) {
             showToast(`Couldn't read questions on ${currentExam.title}. Skipping.`, 'warning');
             return advanceToNextExam(job);
@@ -476,36 +639,97 @@
 
         const examTitle = getExamTitle(currentExam.url);
         if (!job.data[examTitle]) {
-            job.data[examTitle] = { url: currentExam.url, questions: [] };
+            job.data[examTitle] = { url: currentExam.url, total: null, questions: [] };
         }
-        job.lastQuestionText = null;
+        // Discover total once. Re-check on later iterations only if still null.
+        job.data[examTitle].total = job.data[examTitle].total || getTotalQuestions();
         job.currentExamCount = 0;
         saveJob(job);
 
+        // -------------- PASS 1: linear walk via the Next button --------------
+        // Same auto-advance logic as v0.3.2 (text-change), but every capture
+        // is tagged with its real qn from the DOM indicator.
         let lastText = null;
+        const captured = []; // { qn, text, props }
+        const seenTexts = new Set();
 
         for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
             const q = await waitFor(() => {
                 const cur = getCurrentQuestion();
                 if (!cur) return null;
-                if (cur.text === lastText) return null; // wait for the new question to render
+                if (cur.text === lastText) return null;
                 return cur;
             }, QUESTION_WAIT_MS);
 
             if (!q) break; // no more new questions — exam done
 
-            job.data[examTitle].questions.push(q);
-            job.currentExamCount = job.data[examTitle].questions.length;
-            saveJob(job);
-            updateProgressHud(job, examTitle);
+            // Stability re-check guards against mid-render captures.
+            await sleep(STABILITY_DELAY_MS);
+            const verify = getCurrentQuestion();
+            if (!verify || verify.text !== q.text) {
+                // Page is mid-flip; loop will re-poll on next iteration.
+                continue;
+            }
+
+            // Skip if we've already captured this exact text (defends against
+            // a duplicate fire from a re-render after a successful capture).
+            if (!seenTexts.has(q.text)) {
+                captured.push({ qn: q.qn ?? null, text: q.text, props: q.props });
+                seenTexts.add(q.text);
+                job.data[examTitle].questions = stitchNeighbors(captured);
+                job.currentExamCount = captured.length;
+                if (!job.data[examTitle].total) {
+                    job.data[examTitle].total = getTotalQuestions();
+                }
+                saveJob(job);
+                updateProgressHud(job, examTitle);
+            }
 
             lastText = q.text;
+
+            // Stop early if we've reached the known total.
+            const total = job.data[examTitle].total;
+            if (total && q.qn != null && q.qn >= total) break;
 
             const next = getNextBtn();
             if (!next || next.disabled || next.getAttribute('aria-disabled') === 'true') break;
             next.click();
-            // Small breath so React can swap the DOM before our next poll.
-            await sleep(150);
+            await sleep(POST_CLICK_PAUSE_MS);
+        }
+
+        // -------------- PASS 2: gap-fill via sidebar Q-links --------------
+        // If the page exposes a total, find any qn we don't have and try to
+        // navigate to it directly. This recovers the 47/50 / 32/50 cases
+        // where the linear walk dropped one or more questions mid-exam.
+        const total = job.data[examTitle].total;
+        if (total) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const map = indexByQn(captured);
+                const missing = [];
+                for (let n = 1; n <= total; n++) if (!map[n]) missing.push(n);
+                if (missing.length === 0) break;
+
+                for (const n of missing) {
+                    const link = getSidebarQLink(n);
+                    if (!link) continue;
+                    link.click();
+                    await sleep(POST_CLICK_PAUSE_MS);
+                    const got = await captureStableQuestion(QUESTION_WAIT_MS);
+                    if (!got) continue;
+                    // Trust the visible Qn over our target (in case the
+                    // sidebar item renumbered after a refresh).
+                    const realQn = got.qn ?? n;
+                    if (!seenTexts.has(got.text) && !indexByQn(captured)[realQn]) {
+                        captured.push({ qn: realQn, text: got.text, props: got.props });
+                        seenTexts.add(got.text);
+                    }
+                }
+
+                job.data[examTitle].questions = stitchNeighbors(captured);
+                job.currentExamCount = captured.length;
+                saveJob(job);
+                updateProgressHud(job, examTitle);
+            }
         }
 
         await advanceToNextExam(job);
@@ -577,11 +801,15 @@
         const el = document.getElementById('eqe-scraper-hud-progress');
         if (!el) return;
         const idx = job.currentExamIndex + 1;
-        const total = job.exams.length;
+        const totalExams = job.exams.length;
+        const block = job.data?.[examTitle];
+        const captured = block?.questions?.length || 0;
+        const expected = block?.total || null;
+        const ratio = expected ? `${captured}/${expected}` : `${captured}`;
         el.innerHTML =
             `Module: <b>${escapeHtml(job.module)}</b><br>` +
-            `Exam ${idx}/${total}: <b>${escapeHtml(examTitle || '')}</b><br>` +
-            `Questions captured: <b>${job.currentExamCount || 0}</b>`;
+            `Exam ${idx}/${totalExams}: <b>${escapeHtml(examTitle || '')}</b><br>` +
+            `Questions captured: <b>${ratio}</b>`;
     }
 
     function escapeHtml(s) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -65,18 +65,28 @@
     // This is the source of truth for "did the page advance?" — much more
     // reliable than text comparison, which falsely matches multi-part
     // clinical cases that share an identical stem.
-    const Q_NUM_RE = /\bQ\s*(\d+)\s*$/i;
+    //
+    // The regex REQUIRES a non-empty title prefix before the "Q<n>" so we
+    // don't accidentally match the sidebar's bare "Q1", "Q2", "Q3" labels —
+    // those would otherwise tie on length and document order would always
+    // pick "Q1", pinning getCurrentQuestionNumber() to 1 forever.
+    const Q_HEADING_RE = /^(.+?)\s+Q\s*(\d+)\s*$/i;
     function getCurrentQuestionNumber() {
         const candidates = document.querySelectorAll(
             'h1, h2, h3, h4, h5, [class*="title"], [class*="heading"]'
         );
         const matches = [];
         candidates.forEach(el => {
+            // Belt-and-braces: also skip anything inside the question-list
+            // sidebar / nav, since those frequently use heading classes too.
+            if (el.closest('aside, nav, [class*="sidebar"]')) return;
             if (el.children.length > 3) return;
             const txt = el.textContent?.trim();
             if (!txt || txt.length > 80) return;
-            const m = txt.match(Q_NUM_RE);
-            if (m) matches.push({ n: parseInt(m[1], 10), len: txt.length });
+            const m = txt.match(Q_HEADING_RE);
+            if (m && m[1].trim().length > 0) {
+                matches.push({ n: parseInt(m[2], 10), len: txt.length });
+            }
         });
         if (matches.length === 0) return null;
         // Prefer the shortest matching element (the leaf "<title> Q<n>" line,

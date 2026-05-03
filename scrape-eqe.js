@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.3.1
+// @version      0.3.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -30,11 +30,9 @@
     // Page-load grace period before we try to scrape the first question.
     const PAGE_SETTLE_MS     = 1500;
     // How long to wait for a question's DOM to appear after a click.
-    const QUESTION_WAIT_MS   = 15000;
+    const QUESTION_WAIT_MS   = 8000;
     // How often we poll the DOM while waiting for a new question.
     const POLL_MS            = 200;
-    // Pause after clicking "next" to let React swap the DOM.
-    const POST_CLICK_MS      = 300;
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
@@ -60,81 +58,6 @@
         Array.from(document.querySelectorAll('button')).find(b =>
             /next|suivant/i.test(b.textContent || '')
         );
-
-    // Parse "<title> Q<n>" heading (e.g. "normal 2026 Q1") -> question number.
-    // This is the source of truth for "did the page advance?" — much more
-    // reliable than text comparison, which falsely matches multi-part
-    // clinical cases that share an identical stem.
-    //
-    // The regex REQUIRES a non-empty title prefix before the "Q<n>" so we
-    // don't accidentally match the sidebar's bare "Q1", "Q2", "Q3" labels —
-    // those would otherwise tie on length and document order would always
-    // pick "Q1", pinning getCurrentQuestionNumber() to 1 forever.
-    const Q_HEADING_RE = /^(.+?)\s+Q\s*(\d+)\s*$/i;
-    function getCurrentQuestionNumber() {
-        const candidates = document.querySelectorAll(
-            'h1, h2, h3, h4, h5, [class*="title"], [class*="heading"]'
-        );
-        const matches = [];
-        candidates.forEach(el => {
-            // Belt-and-braces: also skip anything inside the question-list
-            // sidebar / nav, since those frequently use heading classes too.
-            if (el.closest('aside, nav, [class*="sidebar"]')) return;
-            if (el.children.length > 3) return;
-            const txt = el.textContent?.trim();
-            if (!txt || txt.length > 80) return;
-            const m = txt.match(Q_HEADING_RE);
-            if (m && m[1].trim().length > 0) {
-                matches.push({ n: parseInt(m[2], 10), len: txt.length });
-            }
-        });
-        if (matches.length === 0) return null;
-        // Prefer the shortest matching element (the leaf "<title> Q<n>" line,
-        // not a wrapping container that happens to also contain it).
-        matches.sort((a, b) => a.len - b.len);
-        return matches[0].n;
-    }
-
-    // Total questions in the exam, read from the sidebar's "n / N" indicator
-    // (e.g. "0 / 50") or, failing that, by counting Q1..Qn entries in the
-    // sidebar.
-    function getTotalQuestions() {
-        const all = document.querySelectorAll('aside *, nav *, [class*="sidebar"] *');
-        for (const el of all) {
-            if (el.children.length > 0) continue;
-            const txt = el.textContent?.trim();
-            const m = txt?.match(/^\s*\d+\s*\/\s*(\d+)\s*$/);
-            if (m) {
-                const n = parseInt(m[1], 10);
-                if (n > 0 && n < 500) return n;
-            }
-        }
-        // Fallback: count distinct "Q<n>" labels in the sidebar.
-        const sidebar = document.querySelector('aside') || document.body;
-        const seen = new Set();
-        sidebar.querySelectorAll('button, a, li, div, span').forEach(el => {
-            if (el.children.length > 4) return;
-            const m = el.textContent?.trim().match(/^Q\s*(\d+)$/i);
-            if (m) seen.add(parseInt(m[1], 10));
-        });
-        return seen.size > 0 ? Math.max(...seen) : null;
-    }
-
-    // Sidebar Q-link for a given question number (used as a fallback when
-    // clicking "next" doesn't advance the page).
-    function getSidebarQLink(n) {
-        const sidebar = document.querySelector('aside') || document.body;
-        const candidates = sidebar.querySelectorAll('button, a, li, div, span');
-        for (const el of candidates) {
-            if (el.children.length > 4) continue;
-            const m = el.textContent?.trim().match(/^Q\s*(\d+)$/i);
-            if (m && parseInt(m[1], 10) === n) {
-                // Walk up to the nearest clickable ancestor if needed.
-                return el.closest('button, a') || el;
-            }
-        }
-        return null;
-    }
 
     // ============================================================================
     // JOB STATE  (persisted across page navigations via GM storage)
@@ -369,10 +292,10 @@
     // exam order as discovered on the course page (which usually goes
     // newest-first, e.g. 2026 normal -> 2016 rattrapage).
     function buildSummary(job) {
-        const entries  = Object.entries(job.data);
-        const total    = entries.reduce((s, [, b]) => s + (b.questions?.length || 0), 0);
-        const titles   = entries.map(([t]) => t);
-        const lines    = [];
+        const entries = Object.entries(job.data);
+        const total   = entries.reduce((s, [, b]) => s + (b.questions?.length || 0), 0);
+        const titles  = entries.map(([t]) => t);
+        const lines   = [];
 
         let header = `total number of question = ${total}`;
         if (titles.length >= 2) {
@@ -532,18 +455,6 @@
     // EXAM PAGE: SCRAPING LOOP
     // ============================================================================
 
-    // Wait for the page to display question number `target`. Returns the
-    // captured question or null on timeout.
-    async function waitForQuestion(target, timeoutMs = QUESTION_WAIT_MS) {
-        return waitFor(() => {
-            const n = getCurrentQuestionNumber();
-            if (n !== target) return null;
-            const q = getCurrentQuestion();
-            if (!q) return null;
-            return { n, q };
-        }, timeoutMs);
-    }
-
     async function runExamScrape() {
         const job = loadJob();
         if (!job || !job.active) return;
@@ -567,87 +478,34 @@
         if (!job.data[examTitle]) {
             job.data[examTitle] = { url: currentExam.url, questions: [] };
         }
+        job.lastQuestionText = null;
         job.currentExamCount = 0;
         saveJob(job);
 
-        // Determine total. Re-read after settle in case the sidebar
-        // hydrates late.
-        let total = getTotalQuestions();
-        if (!total) {
-            await sleep(500);
-            total = getTotalQuestions();
-        }
-        const cap = Math.min(total || MAX_QUESTIONS_PER_EXAM, MAX_QUESTIONS_PER_EXAM);
+        let lastText = null;
 
-        // The page may already be on Q1 (or any Qn the user left it on);
-        // figure out where we actually are and capture it first.
-        let currentN = getCurrentQuestionNumber() ?? 1;
+        for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
+            const q = await waitFor(() => {
+                const cur = getCurrentQuestion();
+                if (!cur) return null;
+                if (cur.text === lastText) return null; // wait for the new question to render
+                return cur;
+            }, QUESTION_WAIT_MS);
 
-        // If we didn't land on Q1, jump there via the sidebar to ensure we
-        // start at the beginning. (Falls through silently if there is no
-        // sidebar Q-link.)
-        if (currentN !== 1) {
-            const q1 = getSidebarQLink(1);
-            if (q1) {
-                q1.click();
-                await sleep(POST_CLICK_MS);
-                const got = await waitForQuestion(1);
-                if (got) currentN = 1;
-            }
-        }
+            if (!q) break; // no more new questions — exam done
 
-        for (let n = 1; n <= cap; n++) {
-            // Make sure the page is showing question `n` (capture or wait).
-            let captured = null;
-            if (getCurrentQuestionNumber() === n) {
-                const q = getCurrentQuestion();
-                if (q) captured = { n, q };
-            }
-            if (!captured) {
-                captured = await waitForQuestion(n, QUESTION_WAIT_MS);
-            }
-
-            // Fallback: if "next" didn't actually advance us, click the
-            // sidebar Q-link directly and try once more.
-            if (!captured) {
-                const link = getSidebarQLink(n);
-                if (link) {
-                    link.click();
-                    await sleep(POST_CLICK_MS);
-                    captured = await waitForQuestion(n, QUESTION_WAIT_MS);
-                }
-            }
-
-            if (!captured) {
-                // Couldn't reach this question at all. Record a placeholder
-                // so question numbering stays aligned with the source, then
-                // try to push on to n+1.
-                job.data[examTitle].questions.push({
-                    text: `[Q${n}] — could not capture (page didn't render in time)`,
-                    props: LABELS.map(l => `${l}] `),
-                });
-            } else {
-                job.data[examTitle].questions.push(captured.q);
-            }
+            job.data[examTitle].questions.push(q);
             job.currentExamCount = job.data[examTitle].questions.length;
             saveJob(job);
             updateProgressHud(job, examTitle);
 
-            if (n === cap) break;
+            lastText = q.text;
 
-            // Click "next" to move to n+1. If next is missing/disabled,
-            // try the sidebar; if that's also missing, we're done.
             const next = getNextBtn();
-            const nextDisabled = !next || next.disabled ||
-                next.getAttribute('aria-disabled') === 'true';
-            if (!nextDisabled) {
-                next.click();
-            } else {
-                const link = getSidebarQLink(n + 1);
-                if (!link) break; // truly out of questions
-                link.click();
-            }
-            await sleep(POST_CLICK_MS);
+            if (!next || next.disabled || next.getAttribute('aria-disabled') === 'true') break;
+            next.click();
+            // Small breath so React can swap the DOM before our next poll.
+            await sleep(150);
         }
 
         await advanceToNextExam(job);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.6
+// @version      0.6.0
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -25,6 +25,9 @@
     const JOB_KEY            = 'scrape_job_v1';
     const COURSE_URL_RE      = /\/dashboard\/course\/[0-9a-f-]+/i;
     const EXAM_URL_RE        = /\/exam\/[0-9a-f-]+/i;
+    // Match the dashboard root only (NOT /dashboard/course/... or any
+    // other sub-route). Both "/dashboard" and "/dashboard/" qualify.
+    const DASHBOARD_URL_RE   = /^\/dashboard\/?$/i;
     const LABELS             = ['A', 'B', 'C', 'D', 'E'];
 
     // Page-load grace period before we try to scrape the first question.
@@ -902,6 +905,37 @@
     // COURSE PAGE: START BUTTON + EXAM DISCOVERY
     // ============================================================================
 
+    // Mirrors scanAndSaveCourses from +++ userscript.txt:396 — finds every
+    // course/module link on the dashboard (both the grid cards and the
+    // sidebar menu items). Dedupes by UUID, so the same module appearing
+    // in both lists collapses to one entry. The "Dashboard" sidebar item
+    // (href="/dashboard") is excluded automatically by the selector since
+    // it lacks "/dashboard/course/".
+    function discoverModules() {
+        const seenIds = new Set();
+        const out = [];
+        document.querySelectorAll('a[href*="/dashboard/course/"]').forEach(a => {
+            const m = a.href.match(/\/dashboard\/course\/([0-9a-f-]+)/i);
+            if (!m) return;
+            const id = m[1].toLowerCase();
+            if (seenIds.has(id)) return;
+
+            // Same h4 → h3 → span chain as the main userscript, with the
+            // same "key=N" / "press=[N]" prefix strip.
+            const nameEl = a.querySelector('h4') ||
+                           a.querySelector('h3') ||
+                           a.querySelector('span');
+            let name = nameEl?.innerText?.trim() || '';
+            name = name.replace(NAV_PREFIX_RE, '').trim();
+            if (!name || /^unknown/i.test(name)) return;
+
+            seenIds.add(id);
+            const url = a.href.split('#')[0].split('?')[0].replace(/\/$/, '');
+            out.push({ id, name, courseUrl: url });
+        });
+        return out;
+    }
+
     function discoverExamLinks() {
         // Dedup by the exam UUID (the canonical identifier), not the full
         // URL. Two anchors pointing at the same exam can otherwise produce
@@ -933,29 +967,8 @@
         return exams;
     }
 
-    function injectStartButton() {
-        if (document.getElementById('eqe-scraper-btn')) return;
-
-        const btn = document.createElement('button');
-        btn.id = 'eqe-scraper-btn';
-        btn.textContent = '📥 Scrape Course';
-        Object.assign(btn.style, {
-            position: 'fixed',
-            top: '70px',
-            right: '60px',
-            zIndex: 2000000,
-            padding: '10px 14px',
-            background: 'linear-gradient(135deg,#10b981 0%,#059669 100%)',
-            color: 'white',
-            border: 'none',
-            borderRadius: '10px',
-            cursor: 'pointer',
-            font: '600 13px system-ui,sans-serif',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-        });
-        btn.onclick = startScrapeFromCoursePage;
-        document.body.appendChild(btn);
-
+    function injectGearButton() {
+        if (document.getElementById('eqe-scraper-gear-btn')) return;
         const gear = document.createElement('button');
         gear.id = 'eqe-scraper-gear-btn';
         gear.textContent = '⚙️';
@@ -981,6 +994,58 @@
         });
         gear.onclick = openSettingsPanel;
         document.body.appendChild(gear);
+    }
+
+    function injectStartButton() {
+        if (document.getElementById('eqe-scraper-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'eqe-scraper-btn';
+        btn.textContent = '📥 Scrape Course';
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '70px',
+            right: '60px',
+            zIndex: 2000000,
+            padding: '10px 14px',
+            background: 'linear-gradient(135deg,#10b981 0%,#059669 100%)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            font: '600 13px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+        });
+        btn.onclick = startScrapeFromCoursePage;
+        document.body.appendChild(btn);
+
+        injectGearButton();
+    }
+
+    function injectDashboardButton() {
+        if (document.getElementById('eqe-scraper-batch-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'eqe-scraper-batch-btn';
+        btn.textContent = '📦 Export All Modules';
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '70px',
+            right: '60px',
+            zIndex: 2000000,
+            padding: '10px 14px',
+            background: 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            font: '600 13px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+        });
+        btn.onclick = startScrapeAllModules;
+        document.body.appendChild(btn);
+
+        injectGearButton();
     }
 
     // ============================================================================
@@ -1134,22 +1199,100 @@
         const ok = window.confirm(
             `Scrape "${moduleName}"?\n\n` +
             `Found ${exams.length} exam(s). The page will navigate through ` +
-            `each one and capture every question. Two files (.md, .txt) will ` +
-            `be downloaded when finished.\n\n` +
+            `each one and capture every question. Files will be downloaded ` +
+            `when finished.\n\n` +
             `Don't close the tab while scraping.`
         );
         if (!ok) return;
 
+        // Single-module run is a one-element batch — same code path as
+        // multi-module from the dashboard.
+        const id = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1] || null;
         const job = {
             active: true,
+            modules: [{ id, name: moduleName, courseUrl: location.href }],
+            currentModuleIndex: 0,
+            // Per-module state — already populated since we discovered exams here.
             module: moduleName,
             courseUrl: location.href,
             exams,
             currentExamIndex: 0,
             data: {},
             currentExamCount: 0,
+            // Single-module runs return to the course page when done.
+            batchReturnUrl: location.href,
         };
         saveJob(job);
+        location.href = exams[0].url;
+    }
+
+    // Dashboard "Export All Modules" entry point. Builds a multi-module
+    // batch job; navigation to each course page triggers stepIntoCourse,
+    // which discovers that module's exams in-place and starts the
+    // existing exam-walk flow.
+    function startScrapeAllModules() {
+        const modules = discoverModules();
+        if (modules.length === 0) {
+            showToast('No modules found on this dashboard.', 'warning');
+            return;
+        }
+        const list = modules.map(m => ` • ${m.name}`).join('\n');
+        const ok = window.confirm(
+            `Export ${modules.length} module${modules.length === 1 ? '' : 's'}?\n\n` +
+            list + '\n\n' +
+            `For each module the scraper will visit every exam, capture all ` +
+            `questions, then download a .txt / .md file before moving on.\n\n` +
+            `This can take a while. Don't close the tab.`
+        );
+        if (!ok) return;
+
+        const job = {
+            active: true,
+            modules,
+            currentModuleIndex: 0,
+            // Per-module state is filled in on arrival to each course page.
+            module: null,
+            courseUrl: null,
+            exams: null,        // sentinel: not yet discovered
+            currentExamIndex: 0,
+            data: {},
+            currentExamCount: 0,
+            batchReturnUrl: location.href,  // back to dashboard at the end
+        };
+        saveJob(job);
+        location.href = modules[0].courseUrl;
+    }
+
+    // Called by init() when we land on a course page that matches the
+    // job's currentModuleIndex AND haven't yet discovered exams there
+    // (multi-module batch first arrival on each course). Discovers exams
+    // and kicks off the standard exam-walk.
+    async function stepIntoCourse(job) {
+        injectProgressHud(job);
+        await sleep(PAGE_SETTLE_MS);
+
+        const moduleEntry = job.modules[job.currentModuleIndex];
+        const exams = discoverExamLinks();
+
+        if (exams.length === 0) {
+            showToast(`No exams in "${moduleEntry.name}" — skipping.`, 'warning');
+            await sleep(800);
+            await advanceToNextModule(job);
+            return;
+        }
+
+        // Resolve the module's display name from the page if possible
+        // (matches what the user sees), falling back to the name we
+        // captured on the dashboard.
+        job.module             = getCourseModuleName() || moduleEntry.name;
+        job.courseUrl          = moduleEntry.courseUrl || location.href;
+        job.exams              = exams;
+        job.currentExamIndex   = 0;
+        job.data               = {};
+        job.currentExamCount   = 0;
+        saveJob(job);
+
+        await sleep(400);
         location.href = exams[0].url;
     }
 
@@ -1404,20 +1547,51 @@
         job.currentExamIndex += 1;
         saveJob(job);
         if (job.currentExamIndex >= job.exams.length) {
-            // Done — generate downloads, then go back to the course page.
+            // This module is done. Write its files, then either move on
+            // to the next module (multi-module batch) or end the run.
             try {
                 exportFiles(job);
-                showToast(`✅ Scraped ${Object.keys(job.data).length} exam(s). Files downloading.`, 'success');
+                const moduleLabel = job.module || 'module';
+                showToast(`✅ ${moduleLabel}: ${Object.keys(job.data).length} exam(s) saved.`, 'success');
             } catch (e) {
                 showToast(`Export failed: ${e.message}`, 'error');
             }
-            clearJob();
             await sleep(2500);
-            location.href = job.courseUrl;
+            await advanceToNextModule(job);
             return;
         }
         await sleep(500);
         location.href = job.exams[job.currentExamIndex].url;
+    }
+
+    async function advanceToNextModule(job) {
+        job.currentModuleIndex += 1;
+        if (job.currentModuleIndex >= (job.modules?.length || 0)) {
+            // Whole batch is done.
+            const dest = job.batchReturnUrl || job.courseUrl || location.origin + '/dashboard';
+            const moduleCount = job.modules?.length || 0;
+            clearJob();
+            if (moduleCount > 1) {
+                showToast(`🏁 Batch complete: ${moduleCount} modules saved.`, 'success');
+            }
+            await sleep(1500);
+            location.href = dest;
+            return;
+        }
+
+        // Reset per-module state so stepIntoCourse on the next page knows
+        // it needs to discover exams. The dashboard-level fields
+        // (modules, currentModuleIndex, batchReturnUrl) are preserved.
+        job.module             = null;
+        job.courseUrl          = null;
+        job.exams              = null;
+        job.currentExamIndex   = 0;
+        job.data               = {};
+        job.currentExamCount   = 0;
+        saveJob(job);
+
+        await sleep(500);
+        location.href = job.modules[job.currentModuleIndex].courseUrl;
     }
 
     // ============================================================================
@@ -1456,7 +1630,7 @@
                 const j = loadJob();
                 clearJob();
                 showToast('Scrape stopped.', 'warning');
-                if (j) location.href = j.courseUrl;
+                if (j) location.href = j.batchReturnUrl || j.courseUrl;
             }
         };
         updateProgressHud(job, getExamTitle(job.exams[job.currentExamIndex].url));
@@ -1465,16 +1639,29 @@
     function updateProgressHud(job, examTitle) {
         const el = document.getElementById('eqe-scraper-hud-progress');
         if (!el) return;
-        const idx = job.currentExamIndex + 1;
-        const totalExams = job.exams.length;
-        const block = job.data?.[examTitle];
-        const captured = block?.questions?.length || 0;
-        const expected = block?.total || null;
-        const ratio = expected ? `${captured}/${expected}` : `${captured}`;
-        el.innerHTML =
-            `Module: <b>${escapeHtml(job.module)}</b><br>` +
-            `Exam ${idx}/${totalExams}: <b>${escapeHtml(examTitle || '')}</b><br>` +
-            `Questions captured: <b>${ratio}</b>`;
+        const examIdx     = (job.currentExamIndex ?? 0) + 1;
+        const totalExams  = job.exams?.length ?? 0;
+        const block       = examTitle ? job.data?.[examTitle] : null;
+        const captured    = block?.questions?.length || 0;
+        const expected    = block?.total || null;
+        const ratio       = expected ? `${captured}/${expected}` : `${captured}`;
+
+        // Show "Module i/N: Name" only on multi-module batches; single-
+        // module runs keep the existing one-line layout.
+        const moduleIdx     = (job.currentModuleIndex ?? 0) + 1;
+        const totalModules  = job.modules?.length ?? 1;
+        const moduleLine    = totalModules > 1
+            ? `Module ${moduleIdx}/${totalModules}: <b>${escapeHtml(job.module || '…')}</b>`
+            : `Module: <b>${escapeHtml(job.module || '…')}</b>`;
+
+        // Hide the exam line entirely until exams are discovered (e.g.
+        // briefly while stepIntoCourse runs at the top of each module).
+        const examLine = totalExams > 0
+            ? `Exam ${examIdx}/${totalExams}: <b>${escapeHtml(examTitle || '')}</b><br>` +
+              `Questions captured: <b>${ratio}</b>`
+            : `<i style="opacity:0.7;">discovering exams…</i>`;
+
+        el.innerHTML = `${moduleLine}<br>${examLine}`;
     }
 
     function escapeHtml(s) {
@@ -1487,16 +1674,42 @@
     // ROUTING
     // ============================================================================
 
-    function isCoursePage() { return COURSE_URL_RE.test(location.pathname); }
-    function isExamPage()   { return EXAM_URL_RE.test(location.pathname); }
+    function isCoursePage()    { return COURSE_URL_RE.test(location.pathname); }
+    function isExamPage()      { return EXAM_URL_RE.test(location.pathname); }
+    function isDashboardPage() { return DASHBOARD_URL_RE.test(location.pathname); }
+
+    function currentCourseId() {
+        return location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1]?.toLowerCase() || null;
+    }
 
     function init() {
         const job = loadJob();
 
+        if (isDashboardPage()) {
+            // Reaching the dashboard with an active job means either the
+            // batch just finished (advanceToNextModule already cleared)
+            // or the user navigated here mid-run. In the second case,
+            // clear the stale job so they can start fresh.
+            if (job?.active) clearJob();
+            injectDashboardButton();
+            return;
+        }
+
         if (isCoursePage()) {
-            // No active job → show the start button. If a job is somehow
-            // active on the course page (e.g. user manually navigated back),
-            // also show the button so they can restart cleanly.
+            // Multi-module batch: arrival on the course we're currently
+            // processing AND we haven't discovered exams yet -> step in.
+            const expected = job?.modules?.[job?.currentModuleIndex];
+            if (job?.active
+                && expected
+                && expected.id === currentCourseId()
+                && (!job.exams || job.exams.length === 0)) {
+                stepIntoCourse(job);
+                return;
+            }
+
+            // Otherwise: fall through to the single-module entry button.
+            // If a job is somehow active on the course page (user
+            // manually navigated back), clear it so they can restart.
             if (job?.active) clearJob();
             injectStartButton();
             return;
@@ -1515,6 +1728,7 @@
             lastUrl = location.href;
             // Tear down any HUD/button from the previous route before re-init.
             document.getElementById('eqe-scraper-btn')?.remove();
+            document.getElementById('eqe-scraper-batch-btn')?.remove();
             document.getElementById('eqe-scraper-gear-btn')?.remove();
             document.getElementById('eqe-scraper-hud')?.remove();
             document.getElementById('eqe-scraper-settings-overlay')?.remove();

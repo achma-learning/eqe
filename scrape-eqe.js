@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.4.4
+// @version      0.5.0
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -36,17 +36,54 @@
     // Two-read stability gap. The page sometimes renders answer buttons
     // before the question text settles ("Loading…" → real text). We capture
     // only when the text reads identically twice this far apart.
-    const STABILITY_DELAY_MS = 250;
+    // Mutable: overwritten by speed preset / custom settings on init.
+    let STABILITY_DELAY_MS   = 250;
     // Pause after clicking next or a sidebar Q-link.
-    const POST_CLICK_PAUSE_MS = 200;
+    let POST_CLICK_PAUSE_MS  = 200;
     // Slower, safer pause used during the surgical gap-fill pass — gives
     // React more time to settle so we can trust the Qn indicator we read.
-    const SURGICAL_PAUSE_MS  = 500;
+    let SURGICAL_PAUSE_MS    = 500;
     // Maximum number of surgical gap-fill rounds before giving up.
     const MAX_GAP_FILL_ROUNDS = 3;
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
+
+    // Scrape-speed presets exposed via the gear settings panel.
+    const SPEED_PRESETS = {
+        fast:   { post: 100, surgical: 300, stability: 150 },
+        normal: { post: 200, surgical: 500, stability: 250 },
+        safe:   { post: 400, surgical: 800, stability: 400 },
+    };
+    const DEFAULT_SETTINGS = {
+        speed:     'normal',                // 'fast' | 'normal' | 'safe' | 'custom'
+        custom:    { post: 200, surgical: 500, stability: 250 },
+        outputTxt: true,
+        outputMd:  false,
+    };
+
+    function loadSettings() {
+        const s = {
+            speed:     GM_getValue('scrape_speed',     DEFAULT_SETTINGS.speed),
+            custom:    GM_getValue('scrape_speed_custom', DEFAULT_SETTINGS.custom),
+            outputTxt: GM_getValue('scrape_output_txt', DEFAULT_SETTINGS.outputTxt),
+            outputMd:  GM_getValue('scrape_output_md',  DEFAULT_SETTINGS.outputMd),
+        };
+        const preset = s.speed === 'custom'
+            ? s.custom
+            : (SPEED_PRESETS[s.speed] || SPEED_PRESETS.normal);
+        POST_CLICK_PAUSE_MS = Math.max(50, Number(preset.post)      || 200);
+        SURGICAL_PAUSE_MS   = Math.max(100, Number(preset.surgical) || 500);
+        STABILITY_DELAY_MS  = Math.max(50, Number(preset.stability) || 250);
+        return s;
+    }
+    function saveSettings(s) {
+        GM_setValue('scrape_speed',         s.speed);
+        GM_setValue('scrape_speed_custom',  s.custom);
+        GM_setValue('scrape_output_txt',    !!s.outputTxt);
+        GM_setValue('scrape_output_md',     !!s.outputMd);
+        loadSettings();
+    }
 
     // Question texts that mean "the page hasn't finished loading yet" —
     // never count these as a real question. Without this filter, the
@@ -186,6 +223,29 @@
             if (m && parseInt(m[1], 10) === n) {
                 return el.closest('button, a') || el;
             }
+        }
+        return null;
+    }
+
+    // Correction-type badge shown above the question:
+    //   <span class="inline-flex items-center rounded-md … text-xs font-medium
+    //                bg-emerald-50 text-emerald-700 …">Correction officielle</span>
+    // Different correction types use different background colours
+    // ("Correction collective" is amber on the live site), so we anchor by
+    // the badge's structural classes and require the text to start with
+    // "Correction". Heuristic fallback widens to any inline-flex span with
+    // matching text.
+    function getCorrectionType() {
+        const direct = document.querySelectorAll('span.inline-flex.rounded-md');
+        for (const el of direct) {
+            if (el.children.length > 0) continue;
+            const txt = el.textContent?.trim();
+            if (txt && /^correction\b/i.test(txt) && txt.length < 60) return txt;
+        }
+        const fallback = document.querySelectorAll('span.inline-flex');
+        for (const el of fallback) {
+            const txt = el.textContent?.trim();
+            if (txt && /^correction\b/i.test(txt) && txt.length < 60) return txt;
         }
         return null;
     }
@@ -350,8 +410,9 @@
         return {
             text,
             props,
-            qn:  getCurrentQuestionNumber(),
-            tag: getQuestionTag(),
+            qn:         getCurrentQuestionNumber(),
+            tag:        getQuestionTag(),
+            correction: getCorrectionType(),
         };
     }
 
@@ -577,7 +638,8 @@
         for (const [examTitle, block] of examEntries) {
             lines.push('---');
             lines.push('');
-            lines.push(`## ${examTitle} : ${block.url}`);
+            const corr = block.correction ? ` (${block.correction})` : '';
+            lines.push(`## ${examTitle}${corr} : ${block.url}`);
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
@@ -608,7 +670,8 @@
         for (const [examTitle, block] of Object.entries(job.data)) {
             lines.push('---');
             lines.push('');
-            lines.push(`${examTitle} : ${block.url}`);
+            const corr = block.correction ? ` (${block.correction})` : '';
+            lines.push(`${examTitle}${corr} : ${block.url}`);
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
@@ -626,8 +689,21 @@
 
     function exportFiles(job) {
         const base = sanitizeFilename(job.module);
-        downloadBlob(`${base}.md`,  buildMarkdown(job),  'text/markdown;charset=utf-8');
-        downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+        const s = loadSettings();
+        let wrote = 0;
+        if (s.outputTxt) {
+            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+            wrote++;
+        }
+        if (s.outputMd) {
+            downloadBlob(`${base}.md`,  buildMarkdown(job),  'text/markdown;charset=utf-8');
+            wrote++;
+        }
+        // Defensive: if the user disabled everything, still write the txt
+        // so they don't end a 30-minute scrape with zero output.
+        if (wrote === 0) {
+            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+        }
     }
 
     // ============================================================================
@@ -656,13 +732,14 @@
 
     function injectStartButton() {
         if (document.getElementById('eqe-scraper-btn')) return;
+
         const btn = document.createElement('button');
         btn.id = 'eqe-scraper-btn';
         btn.textContent = '📥 Scrape Course';
         Object.assign(btn.style, {
             position: 'fixed',
             top: '70px',
-            right: '20px',
+            right: '60px',
             zIndex: 2000000,
             padding: '10px 14px',
             background: 'linear-gradient(135deg,#10b981 0%,#059669 100%)',
@@ -675,6 +752,150 @@
         });
         btn.onclick = startScrapeFromCoursePage;
         document.body.appendChild(btn);
+
+        const gear = document.createElement('button');
+        gear.id = 'eqe-scraper-gear-btn';
+        gear.textContent = '⚙️';
+        gear.title = 'Scraper settings';
+        Object.assign(gear.style, {
+            position: 'fixed',
+            top: '70px',
+            right: '20px',
+            zIndex: 2000000,
+            width: '34px',
+            height: '34px',
+            padding: '0',
+            background: 'rgba(17,24,39,0.92)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            font: '14px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+        });
+        gear.onclick = openSettingsPanel;
+        document.body.appendChild(gear);
+    }
+
+    // ============================================================================
+    // SETTINGS PANEL  (gear button on the course page)
+    // ============================================================================
+
+    function openSettingsPanel() {
+        if (document.getElementById('eqe-scraper-settings-overlay')) return;
+        const s = loadSettings();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'eqe-scraper-settings-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed', inset: '0', zIndex: 2000002,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(4px)',
+        });
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) closeSettingsPanel();
+        });
+
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            background: '#111827',
+            color: '#f3f4f6',
+            padding: '20px 22px',
+            borderRadius: '14px',
+            boxShadow: '0 25px 50px rgba(0,0,0,0.4)',
+            width: '360px',
+            maxWidth: '90vw',
+            font: '13px/1.5 system-ui,sans-serif',
+            border: '1px solid #1f2937',
+        });
+
+        const speedRadio = (id, label, sub, checked) => `
+            <label for="${id}" style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${checked ? 'rgba(16,185,129,0.12)' : 'transparent'};">
+                <input type="radio" name="eqe-speed" id="${id}" value="${id}" ${checked ? 'checked' : ''} style="margin-top:3px;">
+                <div><div style="font-weight:600;">${label}</div><div style="opacity:0.6;font-size:11px;">${sub}</div></div>
+            </label>`;
+
+        panel.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+                <div style="font-size:15px;font-weight:700;">⚙️ Scraper settings</div>
+                <button id="eqe-set-x" style="background:transparent;border:none;color:#9ca3af;font-size:18px;cursor:pointer;line-height:1;">×</button>
+            </div>
+
+            <div style="font-weight:600;margin-bottom:6px;">Scrape speed</div>
+            <div id="eqe-set-speed" style="display:flex;flex-direction:column;gap:2px;margin-bottom:14px;">
+                ${speedRadio('fast',   'Fast',         '~100ms post-click. Best signal — risk of misses.', s.speed === 'fast')}
+                ${speedRadio('normal', 'Normal',       '~200ms post-click. Default.',                       s.speed === 'normal')}
+                ${speedRadio('safe',   'Slow / Safe',  '~400ms post-click. Slower but most reliable.',      s.speed === 'safe')}
+                ${speedRadio('custom', 'Custom',       'Set the three timings yourself.',                   s.speed === 'custom')}
+            </div>
+
+            <div id="eqe-set-custom" style="display:${s.speed === 'custom' ? 'block' : 'none'};margin-bottom:14px;padding:10px;border:1px solid #1f2937;border-radius:10px;background:rgba(0,0,0,0.2);">
+                <div style="display:grid;grid-template-columns:1fr 80px;gap:6px 10px;align-items:center;font-size:12px;">
+                    <label for="eqe-set-post">Post-click pause (ms)</label>
+                    <input id="eqe-set-post" type="number" min="50" step="50" value="${s.custom.post}" style="background:#0b1220;color:#f3f4f6;border:1px solid #1f2937;border-radius:6px;padding:4px 6px;">
+                    <label for="eqe-set-surg">Surgical pause (ms)</label>
+                    <input id="eqe-set-surg" type="number" min="100" step="50" value="${s.custom.surgical}" style="background:#0b1220;color:#f3f4f6;border:1px solid #1f2937;border-radius:6px;padding:4px 6px;">
+                    <label for="eqe-set-stab">Stability delay (ms)</label>
+                    <input id="eqe-set-stab" type="number" min="50" step="50" value="${s.custom.stability}" style="background:#0b1220;color:#f3f4f6;border:1px solid #1f2937;border-radius:6px;padding:4px 6px;">
+                </div>
+            </div>
+
+            <div style="font-weight:600;margin-bottom:6px;">Output files</div>
+            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:18px;">
+                <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
+                    <input type="checkbox" id="eqe-set-txt" ${s.outputTxt ? 'checked' : ''}>
+                    <span><b>.txt</b> — plain text (recommended)</span>
+                </label>
+                <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
+                    <input type="checkbox" id="eqe-set-md" ${s.outputMd ? 'checked' : ''}>
+                    <span><b>.md</b> — Markdown with #/##/### headings</span>
+                </label>
+            </div>
+
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button id="eqe-set-cancel" style="background:transparent;color:#d1d5db;border:1px solid #374151;border-radius:8px;padding:7px 12px;cursor:pointer;font:600 12px system-ui;">Cancel</button>
+                <button id="eqe-set-save"   style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:white;border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font:600 12px system-ui;">Save</button>
+            </div>
+        `;
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        // Toggle the custom sub-panel when the radio changes.
+        panel.querySelectorAll('input[name="eqe-speed"]').forEach(r => {
+            r.addEventListener('change', () => {
+                const isCustom = panel.querySelector('input[name="eqe-speed"]:checked')?.value === 'custom';
+                panel.querySelector('#eqe-set-custom').style.display = isCustom ? 'block' : 'none';
+                // Repaint the "selected" tint on the labels.
+                panel.querySelectorAll('#eqe-set-speed label').forEach(l => {
+                    const checked = l.querySelector('input')?.checked;
+                    l.style.background = checked ? 'rgba(16,185,129,0.12)' : 'transparent';
+                });
+            });
+        });
+
+        panel.querySelector('#eqe-set-x').onclick      = closeSettingsPanel;
+        panel.querySelector('#eqe-set-cancel').onclick = closeSettingsPanel;
+        panel.querySelector('#eqe-set-save').onclick   = () => {
+            const speed = panel.querySelector('input[name="eqe-speed"]:checked')?.value || 'normal';
+            const custom = {
+                post:      parseInt(panel.querySelector('#eqe-set-post').value, 10) || DEFAULT_SETTINGS.custom.post,
+                surgical:  parseInt(panel.querySelector('#eqe-set-surg').value, 10) || DEFAULT_SETTINGS.custom.surgical,
+                stability: parseInt(panel.querySelector('#eqe-set-stab').value, 10) || DEFAULT_SETTINGS.custom.stability,
+            };
+            const outputTxt = panel.querySelector('#eqe-set-txt').checked;
+            const outputMd  = panel.querySelector('#eqe-set-md').checked;
+            saveSettings({ speed, custom, outputTxt, outputMd });
+            showToast('Settings saved.', 'success');
+            closeSettingsPanel();
+        };
+    }
+
+    function closeSettingsPanel() {
+        document.getElementById('eqe-scraper-settings-overlay')?.remove();
     }
 
     function startScrapeFromCoursePage() {
@@ -733,6 +954,9 @@
         const job = loadJob();
         if (!job || !job.active) return;
 
+        // Apply the user's saved scrape-speed before any pauses fire.
+        loadSettings();
+
         // Make sure we're on the exam this job expects. If the user clicked
         // away, just abort silently — the start button on the course page
         // can be used to retry.
@@ -786,12 +1010,19 @@
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
                 captured.push({
-                    qn:    q.qn ?? null,
-                    text:  q.text,
-                    props: q.props,
-                    tag:   q.tag ?? null,
+                    qn:         q.qn ?? null,
+                    text:       q.text,
+                    props:      q.props,
+                    tag:        q.tag ?? null,
+                    correction: q.correction ?? null,
                 });
                 seenTexts.add(q.text);
+                // Lock the exam-wide correction once we've seen one. The
+                // badge is constant per exam in practice, but if it ever
+                // disagreed across questions we'd take the first.
+                if (!job.data[examTitle].correction && q.correction) {
+                    job.data[examTitle].correction = q.correction;
+                }
                 job.data[examTitle].questions = stitchNeighbors(captured);
                 job.currentExamCount = captured.length;
                 if (!job.data[examTitle].total) {
@@ -841,12 +1072,16 @@
                     if (indexByQn(captured)[realQn]) continue;
 
                     captured.push({
-                        qn:    realQn,
-                        text:  got.text,
-                        props: got.props,
-                        tag:   got.tag ?? null,
+                        qn:         realQn,
+                        text:       got.text,
+                        props:      got.props,
+                        tag:        got.tag ?? null,
+                        correction: got.correction ?? null,
                     });
                     seenTexts.add(got.text);
+                    if (!job.data[examTitle].correction && got.correction) {
+                        job.data[examTitle].correction = got.correction;
+                    }
                     recovered++;
                 }
 
@@ -1027,11 +1262,17 @@
             lastUrl = location.href;
             // Tear down any HUD/button from the previous route before re-init.
             document.getElementById('eqe-scraper-btn')?.remove();
+            document.getElementById('eqe-scraper-gear-btn')?.remove();
             document.getElementById('eqe-scraper-hud')?.remove();
+            document.getElementById('eqe-scraper-settings-overlay')?.remove();
             setTimeout(init, 300);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
+    // Hydrate scraper-speed settings on first load so background scrapers
+    // started on a non-course page (e.g. a refresh inside an exam) honor
+    // them too.
+    loadSettings();
     init();
 })();

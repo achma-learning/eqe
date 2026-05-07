@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.7.0
+// @version      0.7.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -802,8 +802,11 @@
     }
 
     // Render the per-question correction line, e.g.:
-    //   "Correction officielle - normal 2026 Q25 - Infections cutanées = A,B,C"
+    //   "Correction officielle - normal 2026 Q25 = A,B,C"
     // The badge text comes from the exam block (locked once we see it).
+    // The topic tag is intentionally NOT included here — it already
+    // appears on the question heading, and repeating it on the correction
+    // line was making the file noisier than the user wanted.
     // Returns null when the line should be omitted entirely:
     //   - badge is "Correction collective" (site doesn't expose answers)
     //   - no badge AND no captured answers
@@ -816,9 +819,8 @@
         const hasAnswers = Array.isArray(q.correctAnswers) && q.correctAnswers.length;
         if (!badge && !hasAnswers) return null;
 
-        const tag = q.tag ? ` - ${q.tag}` : '';
         const ans = hasAnswers ? q.correctAnswers.join(',') : '[pending]';
-        return `${badge || 'Correction'} - ${examTitle} Q${num}${tag} = ${ans}`;
+        return `${badge || 'Correction'} - ${examTitle} Q${num} = ${ans}`;
     }
 
     // Sort captured questions by their real qn from the page indicator.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.1
+// @version      0.5.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -151,6 +151,25 @@
             /prev|précédent|precedent/i.test(b.textContent || '')
         );
 
+    // The "Answer" / "Réponse" validation button. Mirrored from
+    // +++ userscript.txt:135 — once an answer is clicked it becomes
+    // enabled, and clicking it reveals the four post-correction states
+    // (emerald / amber / red / default).
+    const getCheckBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+        const answerBtn = buttons.find(b => {
+            const text = b.textContent?.trim().toLowerCase();
+            const hasAnswerText = text === 'answer' || text === 'réponse';
+            const hasCheckIcon  = b.querySelector('svg.lucide-circle-check-big');
+            return hasAnswerText && hasCheckIcon;
+        });
+        if (answerBtn) return answerBtn;
+        return buttons.find(b => {
+            const text = b.textContent?.trim();
+            return /check\s*answer|submit|verify|show\s*answer|^answer$|^réponse$/i.test(text);
+        });
+    };
+
     // Current Q-number indicator from the DOM:
     //   <div class="text-sm font-black  border-b border-white/10 pb-1.5 …">7</div>
     // Match the distinctive class combo + a bare integer.
@@ -230,33 +249,74 @@
         return null;
     }
 
-    // Correct-answer detection. Returns an array of letter strings
-    // (e.g. ["A","B","C"]) when the page is showing the correction, or
-    // null when corrections aren't visible / detection isn't wired up
-    // for the current page variant.
-    //
-    // STATUS: stub. The "scrape with correction" toggle works end-to-end
-    // (line is rendered, formatted, and dropped into the file), but the
-    // detection logic itself is still TODO — we need an HTML sample of a
-    // revealed-correction state to anchor the selector to.
-    //
-    // What I need to wire this up:
-    //   1. The full <div class="group … rounded-2xl border …"> snippet for
-    //      a CORRECT answer when correction is visible.
-    //   2. The full <div class="group …"> snippet for an INCORRECT answer
-    //      in the same revealed state.
-    //   3. Any "Show correction" / "Voir la correction" button HTML, in
-    //      case we need to click it before reading.
-    //   4. One QCM example (multiple correct) and one QCU example (one
-    //      correct), so we can confirm the multi-letter case works.
+    // Once correction is revealed, every answer button takes one of four
+    // visual states (per the user's HTML samples):
+    //   - bg-emerald-*  → CORRECT answer that the user selected
+    //   - bg-amber-*    → CORRECT answer the user did NOT select
+    //   - bg-red-*      → WRONG answer the user selected
+    //   - bg-white / bg-zinc-* → unrevealed, OR a wrong unselected answer
+    // The first two are the "correct" set we care about.
+    const ANSWER_STATE_RE      = /\bbg-(emerald|amber|red)-/;
+    const CORRECT_STATE_RE     = /\bbg-(emerald|amber)-/;
+
+    // True iff the page is in a revealed-correction state — i.e. at least
+    // one answer button has a state-specific colour class on it.
+    function isCorrectionRevealed() {
+        return getAnswerButtons().some(b => ANSWER_STATE_RE.test(b.className || ''));
+    }
+
+    // Returns the array of correct letters (e.g. ["A","B","C"]) when the
+    // page is showing the revealed correction. Returns null when nothing
+    // has been revealed yet, and [] when the page is revealed but every
+    // button is white/red (correction not actually exposed for this exam,
+    // e.g. some "Correction collective" cases).
     function getCorrectAnswers() {
-        // Likely anchors once we have samples (heuristic guesses, kept
-        // commented until confirmed):
-        //   - btn.classList.contains('border-emerald-500')
-        //   - btn.querySelector('svg[class*="check"]')
-        //   - btn.getAttribute('data-correct') === 'true'
-        //   - btn.querySelector('span.text-emerald-...')
-        return null;
+        if (!isCorrectionRevealed()) return null;
+        const correct = [];
+        getAnswerButtons().forEach((b, i) => {
+            const cls = b.className || '';
+            if (!CORRECT_STATE_RE.test(cls)) return;
+            const labelEl = b.querySelector('span.font-black');
+            const letter  = labelEl?.textContent?.trim() || LABELS[i] || String(i + 1);
+            if (LABELS.includes(letter)) correct.push(letter);
+        });
+        return correct;
+    }
+
+    // Trigger the revealed-correction state on the current question.
+    //   1. Click any answer button (any letter — we just need to enable
+    //      the validate/Answer button).
+    //   2. Wait for the validate button to come back enabled.
+    //   3. Click it.
+    //   4. Wait for at least one answer button to flip into a coloured
+    //      state.
+    // Returns true on success, false if any step times out.
+    //
+    // SIDE EFFECT: this leaves a real answer recorded against the user's
+    // account on e-qe.online. The settings panel warns about this.
+    async function revealCorrection() {
+        if (isCorrectionRevealed()) return true;
+        const btns = getAnswerButtons();
+        if (btns.length === 0) return false;
+
+        // Click answer A (the first one). Any letter works — clicking
+        // "wrong" still reveals all correct answers via the amber state.
+        btns[0].click();
+
+        // Wait for the validate button to pop in / unlock.
+        const check = await waitFor(() => {
+            const b = getCheckBtn();
+            if (!b) return null;
+            const disabled = b.disabled || b.getAttribute('aria-disabled') === 'true';
+            return disabled ? null : b;
+        }, 4000);
+        if (!check) return false;
+
+        check.click();
+
+        // Wait for the page to actually flip into the revealed state.
+        const ok = await waitFor(isCorrectionRevealed, 4000);
+        return !!ok;
     }
 
     // Correction-type badge shown above the question:
@@ -922,7 +982,7 @@
                 </label>
                 <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
                     <input type="radio" name="eqe-corr" id="eqe-corr-on" value="on" ${s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
-                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question. Currently emits "= [pending]" until answer detection is wired up.</div></div>
+                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question (e.g. "= A,B,C"). <b>Side effect:</b> the scraper clicks an answer per question to reveal the correction, so your progress on the site will be marked.</div></div>
                 </label>
             </div>
 
@@ -1036,7 +1096,7 @@
         if (!job || !job.active) return;
 
         // Apply the user's saved scrape-speed before any pauses fire.
-        loadSettings();
+        const settings = loadSettings();
 
         // Make sure we're on the exam this job expects. If the user clicked
         // away, just abort silently — the start button on the course page
@@ -1090,13 +1150,24 @@
             // Skip if we've already captured this exact text (defends against
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
+                // If the user opted into "scrape with correction", trigger
+                // the reveal *now* (before pushing) so we capture the
+                // correct-answer letters alongside text/props. Reveal does
+                // a real click on the page, so it side-effects the user's
+                // recorded answer for this question.
+                let correctAnswers = q.correctAnswers;
+                if (settings.withCorrection && !correctAnswers) {
+                    const ok = await revealCorrection();
+                    if (ok) correctAnswers = getCorrectAnswers();
+                }
+
                 captured.push({
                     qn:             q.qn ?? null,
                     text:           q.text,
                     props:          q.props,
                     tag:            q.tag ?? null,
                     correction:     q.correction ?? null,
-                    correctAnswers: q.correctAnswers ?? null,
+                    correctAnswers: correctAnswers ?? null,
                 });
                 seenTexts.add(q.text);
                 // Lock the exam-wide correction once we've seen one. The
@@ -1153,13 +1224,21 @@
                     if (seenTexts.has(got.text)) continue;
                     if (indexByQn(captured)[realQn]) continue;
 
+                    // Reveal correction if the user asked for it, same as
+                    // pass 1.
+                    let correctAnswers = got.correctAnswers;
+                    if (settings.withCorrection && !correctAnswers) {
+                        const ok = await revealCorrection();
+                        if (ok) correctAnswers = getCorrectAnswers();
+                    }
+
                     captured.push({
                         qn:             realQn,
                         text:           got.text,
                         props:          got.props,
                         tag:            got.tag ?? null,
                         correction:     got.correction ?? null,
-                        correctAnswers: got.correctAnswers ?? null,
+                        correctAnswers: correctAnswers ?? null,
                     });
                     seenTexts.add(got.text);
                     if (!job.data[examTitle].correction && got.correction) {

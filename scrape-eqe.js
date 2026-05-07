@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.4.1
+// @version      0.4.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -448,8 +448,30 @@
             const expected = block.total || captured;
             const word = captured === 1 ? 'Question' : 'Questions';
             if (expected && captured < expected) {
-                const missing = expected - captured;
-                lines.push(`${title} = ${captured}/${expected} ${word} (${missing} missing)`);
+                // List the specific missing Qns: any qn in 1..expected
+                // that is not present in block.questions. Rendered as
+                // "Q1, Q2, Q5". Cap the list at 20 entries to keep
+                // the header readable for catastrophic failures.
+                const have = new Set(
+                    (block.questions || [])
+                        .map(q => q.qn)
+                        .filter(n => Number.isInteger(n))
+                );
+                const missingNs = [];
+                for (let n = 1; n <= expected; n++) if (!have.has(n)) missingNs.push(n);
+                const count = missingNs.length;
+                const MAX_LISTED = 20;
+                const list = missingNs.slice(0, MAX_LISTED).map(n => `Q${n}`).join(', ');
+                const suffix = missingNs.length > MAX_LISTED
+                    ? `${list}, … +${missingNs.length - MAX_LISTED} more`
+                    : list;
+                if (count > 0 && suffix) {
+                    lines.push(`${title} = ${captured}/${expected} ${word} (${count} missing = ${suffix})`);
+                } else {
+                    // Fallback when we can't identify which Qns are missing
+                    // (e.g. captures lacked qn tags throughout).
+                    lines.push(`${title} = ${captured}/${expected} ${word} (${expected - captured} missing)`);
+                }
             } else {
                 lines.push(`${title} = ${captured} ${word}`);
             }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.0
+// @version      0.5.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -56,18 +56,20 @@
         safe:   { post: 400, surgical: 800, stability: 400 },
     };
     const DEFAULT_SETTINGS = {
-        speed:     'normal',                // 'fast' | 'normal' | 'safe' | 'custom'
-        custom:    { post: 200, surgical: 500, stability: 250 },
-        outputTxt: true,
-        outputMd:  false,
+        speed:           'normal',                // 'fast' | 'normal' | 'safe' | 'custom'
+        custom:          { post: 200, surgical: 500, stability: 250 },
+        outputTxt:       true,
+        outputMd:        false,
+        withCorrection:  false,                    // include the correction line per question
     };
 
     function loadSettings() {
         const s = {
-            speed:     GM_getValue('scrape_speed',     DEFAULT_SETTINGS.speed),
-            custom:    GM_getValue('scrape_speed_custom', DEFAULT_SETTINGS.custom),
-            outputTxt: GM_getValue('scrape_output_txt', DEFAULT_SETTINGS.outputTxt),
-            outputMd:  GM_getValue('scrape_output_md',  DEFAULT_SETTINGS.outputMd),
+            speed:          GM_getValue('scrape_speed',          DEFAULT_SETTINGS.speed),
+            custom:         GM_getValue('scrape_speed_custom',   DEFAULT_SETTINGS.custom),
+            outputTxt:      GM_getValue('scrape_output_txt',     DEFAULT_SETTINGS.outputTxt),
+            outputMd:       GM_getValue('scrape_output_md',      DEFAULT_SETTINGS.outputMd),
+            withCorrection: GM_getValue('scrape_with_correction', DEFAULT_SETTINGS.withCorrection),
         };
         const preset = s.speed === 'custom'
             ? s.custom
@@ -78,10 +80,11 @@
         return s;
     }
     function saveSettings(s) {
-        GM_setValue('scrape_speed',         s.speed);
-        GM_setValue('scrape_speed_custom',  s.custom);
-        GM_setValue('scrape_output_txt',    !!s.outputTxt);
-        GM_setValue('scrape_output_md',     !!s.outputMd);
+        GM_setValue('scrape_speed',           s.speed);
+        GM_setValue('scrape_speed_custom',    s.custom);
+        GM_setValue('scrape_output_txt',      !!s.outputTxt);
+        GM_setValue('scrape_output_md',       !!s.outputMd);
+        GM_setValue('scrape_with_correction', !!s.withCorrection);
         loadSettings();
     }
 
@@ -224,6 +227,35 @@
                 return el.closest('button, a') || el;
             }
         }
+        return null;
+    }
+
+    // Correct-answer detection. Returns an array of letter strings
+    // (e.g. ["A","B","C"]) when the page is showing the correction, or
+    // null when corrections aren't visible / detection isn't wired up
+    // for the current page variant.
+    //
+    // STATUS: stub. The "scrape with correction" toggle works end-to-end
+    // (line is rendered, formatted, and dropped into the file), but the
+    // detection logic itself is still TODO — we need an HTML sample of a
+    // revealed-correction state to anchor the selector to.
+    //
+    // What I need to wire this up:
+    //   1. The full <div class="group … rounded-2xl border …"> snippet for
+    //      a CORRECT answer when correction is visible.
+    //   2. The full <div class="group …"> snippet for an INCORRECT answer
+    //      in the same revealed state.
+    //   3. Any "Show correction" / "Voir la correction" button HTML, in
+    //      case we need to click it before reading.
+    //   4. One QCM example (multiple correct) and one QCU example (one
+    //      correct), so we can confirm the multi-letter case works.
+    function getCorrectAnswers() {
+        // Likely anchors once we have samples (heuristic guesses, kept
+        // commented until confirmed):
+        //   - btn.classList.contains('border-emerald-500')
+        //   - btn.querySelector('svg[class*="check"]')
+        //   - btn.getAttribute('data-correct') === 'true'
+        //   - btn.querySelector('span.text-emerald-...')
         return null;
     }
 
@@ -410,9 +442,10 @@
         return {
             text,
             props,
-            qn:         getCurrentQuestionNumber(),
-            tag:        getQuestionTag(),
-            correction: getCorrectionType(),
+            qn:             getCurrentQuestionNumber(),
+            tag:            getQuestionTag(),
+            correction:     getCorrectionType(),
+            correctAnswers: getCorrectAnswers(),
         };
     }
 
@@ -617,6 +650,21 @@
         return lines;
     }
 
+    // Render the per-question correction line, e.g.:
+    //   "Correction officielle - normal 2026 Q25 - Infections cutanées = A,B,C"
+    // The badge text comes from the exam block (locked once we see it).
+    // When detection hasn't returned a result yet (current state until we
+    // wire up getCorrectAnswers), prints "= [pending]" so the line is
+    // visible in the file but obviously incomplete.
+    function buildCorrectionLine(examTitle, q, num, block) {
+        const badge = block.correction || 'Correction';
+        const tag   = q.tag ? ` - ${q.tag}` : '';
+        const ans   = Array.isArray(q.correctAnswers) && q.correctAnswers.length
+            ? q.correctAnswers.join(',')
+            : '[pending]';
+        return `${badge} - ${examTitle} Q${num}${tag} = ${ans}`;
+    }
+
     // Sort captured questions by their real qn from the page indicator.
     // Questions without a qn (rare — happens only if the indicator was
     // missing on every read) are appended at the end in capture order.
@@ -627,7 +675,8 @@
         return tagged.concat(untagged);
     }
 
-    function buildMarkdown(job) {
+    function buildMarkdown(job, settings = loadSettings()) {
+        const withCorr = !!settings.withCorrection;
         const lines = [];
         lines.push(`# ${job.module}`);
         lines.push('');
@@ -652,13 +701,18 @@
                     lines.push(p);
                     lines.push('');
                 });
+                if (withCorr) {
+                    lines.push(buildCorrectionLine(examTitle, q, num, block));
+                    lines.push('');
+                }
                 lines.push('');
             });
         }
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
     }
 
-    function buildPlainText(job) {
+    function buildPlainText(job, settings = loadSettings()) {
+        const withCorr = !!settings.withCorrection;
         // .txt mirrors the .md content but without markdown markers, matching
         // the user's spec "like in original page".
         const lines = [];
@@ -682,6 +736,10 @@
                 lines.push('');
                 q.props.forEach(p => lines.push(p));
                 lines.push('');
+                if (withCorr) {
+                    lines.push(buildCorrectionLine(examTitle, q, num, block));
+                    lines.push('');
+                }
             });
         }
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
@@ -692,17 +750,17 @@
         const s = loadSettings();
         let wrote = 0;
         if (s.outputTxt) {
-            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+            downloadBlob(`${base}.txt`, buildPlainText(job, s), 'text/plain;charset=utf-8');
             wrote++;
         }
         if (s.outputMd) {
-            downloadBlob(`${base}.md`,  buildMarkdown(job),  'text/markdown;charset=utf-8');
+            downloadBlob(`${base}.md`,  buildMarkdown(job, s),  'text/markdown;charset=utf-8');
             wrote++;
         }
         // Defensive: if the user disabled everything, still write the txt
         // so they don't end a 30-minute scrape with zero output.
         if (wrote === 0) {
-            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+            downloadBlob(`${base}.txt`, buildPlainText(job, s), 'text/plain;charset=utf-8');
         }
     }
 
@@ -845,7 +903,7 @@
             </div>
 
             <div style="font-weight:600;margin-bottom:6px;">Output files</div>
-            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:18px;">
+            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;">
                 <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
                     <input type="checkbox" id="eqe-set-txt" ${s.outputTxt ? 'checked' : ''}>
                     <span><b>.txt</b> — plain text (recommended)</span>
@@ -853,6 +911,18 @@
                 <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
                     <input type="checkbox" id="eqe-set-md" ${s.outputMd ? 'checked' : ''}>
                     <span><b>.md</b> — Markdown with #/##/### headings</span>
+                </label>
+            </div>
+
+            <div style="font-weight:600;margin-bottom:6px;">Correction</div>
+            <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:18px;">
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${!s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
+                    <input type="radio" name="eqe-corr" id="eqe-corr-off" value="off" ${!s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">Scrape without correction</div><div style="opacity:0.6;font-size:11px;">Just the question and propositions A–E (default).</div></div>
+                </label>
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
+                    <input type="radio" name="eqe-corr" id="eqe-corr-on" value="on" ${s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question. Currently emits "= [pending]" until answer detection is wired up.</div></div>
                 </label>
             </div>
 
@@ -877,6 +947,16 @@
             });
         });
 
+        // Repaint the correction radios on selection.
+        panel.querySelectorAll('input[name="eqe-corr"]').forEach(r => {
+            r.addEventListener('change', () => {
+                panel.querySelectorAll('input[name="eqe-corr"]').forEach(input => {
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.style.background = input.checked ? 'rgba(16,185,129,0.12)' : 'transparent';
+                });
+            });
+        });
+
         panel.querySelector('#eqe-set-x').onclick      = closeSettingsPanel;
         panel.querySelector('#eqe-set-cancel').onclick = closeSettingsPanel;
         panel.querySelector('#eqe-set-save').onclick   = () => {
@@ -888,7 +968,8 @@
             };
             const outputTxt = panel.querySelector('#eqe-set-txt').checked;
             const outputMd  = panel.querySelector('#eqe-set-md').checked;
-            saveSettings({ speed, custom, outputTxt, outputMd });
+            const withCorrection = panel.querySelector('#eqe-corr-on').checked;
+            saveSettings({ speed, custom, outputTxt, outputMd, withCorrection });
             showToast('Settings saved.', 'success');
             closeSettingsPanel();
         };
@@ -1010,11 +1091,12 @@
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
                 captured.push({
-                    qn:         q.qn ?? null,
-                    text:       q.text,
-                    props:      q.props,
-                    tag:        q.tag ?? null,
-                    correction: q.correction ?? null,
+                    qn:             q.qn ?? null,
+                    text:           q.text,
+                    props:          q.props,
+                    tag:            q.tag ?? null,
+                    correction:     q.correction ?? null,
+                    correctAnswers: q.correctAnswers ?? null,
                 });
                 seenTexts.add(q.text);
                 // Lock the exam-wide correction once we've seen one. The
@@ -1072,11 +1154,12 @@
                     if (indexByQn(captured)[realQn]) continue;
 
                     captured.push({
-                        qn:         realQn,
-                        text:       got.text,
-                        props:      got.props,
-                        tag:        got.tag ?? null,
-                        correction: got.correction ?? null,
+                        qn:             realQn,
+                        text:           got.text,
+                        props:          got.props,
+                        tag:            got.tag ?? null,
+                        correction:     got.correction ?? null,
+                        correctAnswers: got.correctAnswers ?? null,
                     });
                     seenTexts.add(got.text);
                     if (!job.data[examTitle].correction && got.correction) {

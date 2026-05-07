@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.6.3
+// @version      0.6.4
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -17,6 +17,12 @@
 
     if (window.__eqeScraperLoaded) return;
     window.__eqeScraperLoaded = true;
+
+    // Diagnostic logger — prefixes every line with "[eqe-scraper]" so the
+    // user can filter the DevTools console quickly when something in the
+    // multi-module flow misbehaves. Cheap enough to leave on by default.
+    const log = (...a) => { try { console.log('[eqe-scraper]', ...a); } catch {} };
+    const warn = (...a) => { try { console.warn('[eqe-scraper]', ...a); } catch {} };
 
     // ============================================================================
     // CONSTANTS & STATE KEYS
@@ -1298,6 +1304,8 @@
     // existing exam-walk flow.
     function startScrapeAllModules() {
         const modules = discoverModules();
+        log(`startScrapeAllModules: discovered ${modules.length} modules`,
+            modules.map(m => `${m.id} (${m.name})`));
         if (modules.length === 0) {
             showToast('No modules found on this dashboard.', 'warning');
             return;
@@ -1334,25 +1342,41 @@
     // (multi-module batch first arrival on each course). Discovers exams
     // and kicks off the standard exam-walk.
     async function stepIntoCourse(job) {
+        const moduleEntry = job.modules[job.currentModuleIndex];
+        log('stepIntoCourse: entering module', {
+            index: job.currentModuleIndex,
+            id: moduleEntry?.id,
+            name: moduleEntry?.name,
+            url: location.href,
+        });
         injectProgressHud(job);
 
         // Retry exam discovery on slow renders. The course page is a Next.js
-        // route — `location.href` returns before the cards are in the DOM
-        // on slower connections, so a single PAGE_SETTLE_MS wait was
-        // sometimes finding zero exams and skipping the entire module
-        // (the "detected module but never opened the exam page" bug).
-        // Wait progressively longer on each attempt: 1.5s → 3.0s → 4.5s.
+        // route, and the exam cards arrive after the route's data fetch —
+        // sometimes seconds after `location.href` returned. Without enough
+        // tolerance the scraper would call discoverExamLinks(), see zero
+        // cards, declare the module empty, and skip to the next one (the
+        // "detected module but never opened the exam page" bug).
+        //
+        // Wait progressively longer on each attempt: 2s, 4s, 6s, 8s, 10s
+        // → total ~30s tolerance for very slow renders.
+        const RETRY_WAITS = [2000, 4000, 6000, 8000, 10000];
         let exams = [];
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            await sleep(PAGE_SETTLE_MS * attempt);
+        for (let i = 0; i < RETRY_WAITS.length; i++) {
+            await sleep(RETRY_WAITS[i]);
             exams = discoverExamLinks();
+            log(`stepIntoCourse attempt ${i + 1}: found ${exams.length} exam(s)`);
             if (exams.length > 0) break;
         }
 
-        const moduleEntry = job.modules[job.currentModuleIndex];
-
         if (exams.length === 0) {
-            showToast(`No exams in "${moduleEntry.name}" — skipping.`, 'warning');
+            warn(
+                `stepIntoCourse: gave up on "${moduleEntry?.name}" after ` +
+                `${RETRY_WAITS.length} attempts — discoverExamLinks() returned 0. ` +
+                `Selector was 'a[href*="/exam/"]'. Inspect the page and ` +
+                `report the DOM if cards are visible but undetected.`
+            );
+            showToast(`No exams in "${moduleEntry?.name}" — skipping.`, 'warning');
             await sleep(800);
             await advanceToNextModule(job);
             return;
@@ -1369,6 +1393,7 @@
         job.currentExamCount   = 0;
         saveJob(job);
 
+        log(`stepIntoCourse: about to navigate to first exam ${exams[0].url}`);
         await sleep(400);
         location.href = exams[0].url;
     }
@@ -1651,6 +1676,8 @@
     }
 
     async function advanceToNextModule(job) {
+        log(`advanceToNextModule: moving from index ${job.currentModuleIndex} ` +
+            `(${job.modules?.[job.currentModuleIndex]?.name}) → ${job.currentModuleIndex + 1}`);
         job.currentModuleIndex += 1;
         if (job.currentModuleIndex >= (job.modules?.length || 0)) {
             // Whole batch is done.
@@ -1793,20 +1820,37 @@
 
         if (isCoursePage()) {
             // Multi-module batch: arrival on the course we're currently
-            // processing AND we haven't discovered exams yet -> step in.
+            // processing -> step into it. We accept this even if `exams`
+            // is already populated (re-step to refresh) — better than
+            // nuking the job and confusing the user mid-batch.
             const expected = job?.modules?.[job?.currentModuleIndex];
-            if (job?.active
-                && expected
-                && expected.id === currentCourseId()
-                && (!job.exams || job.exams.length === 0)) {
+            const onExpectedCourse = expected && expected.id === currentCourseId();
+
+            if (job?.active && onExpectedCourse) {
+                if (!job.exams || job.exams.length === 0) {
+                    log('init: course page matches batch position, calling stepIntoCourse');
+                } else {
+                    log('init: course page matches batch position but exams already populated; re-stepping');
+                    job.exams = null; // force re-discovery
+                    saveJob(job);
+                }
                 stepIntoCourse(job);
                 return;
             }
 
-            // Otherwise: fall through to the single-module entry button.
-            // If a job is somehow active on the course page (user
-            // manually navigated back), clear it so they can restart.
-            if (job?.active) clearJob();
+            // We're on a course page but the active job (if any) doesn't
+            // match this URL. Two sub-cases:
+            //   (a) batch active and we drifted onto a different course
+            //       (user clicked elsewhere) — clear and show the button.
+            //   (b) no batch — show the single-course buttons normally.
+            if (job?.active) {
+                warn(
+                    'init: active job does not match this course URL ' +
+                    `(expected ${expected?.id}, got ${currentCourseId()}). ` +
+                    'Clearing the stale job.'
+                );
+                clearJob();
+            }
             injectStartButton();
             return;
         }

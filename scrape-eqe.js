@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.3
+// @version      0.5.4
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -45,6 +45,13 @@
     let SURGICAL_PAUSE_MS    = 500;
     // Maximum number of surgical gap-fill rounds before giving up.
     const MAX_GAP_FILL_ROUNDS = 3;
+    // Total attempts (including the first try) for a single question fetch
+    // or a single correction reveal. Retries grow in length to give the
+    // page more time on each pass — see RETRY_BACKOFF_MS.
+    const MAX_FETCH_ATTEMPTS  = 3;
+    // Linear backoff between retries: wait N * attempt before retry N.
+    // Schedule: 2s before attempt 2, 4s before attempt 3.
+    const RETRY_BACKOFF_MS    = 2000;
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
@@ -281,6 +288,54 @@
             if (LABELS.includes(letter)) correct.push(letter);
         });
         return correct;
+    }
+
+    // Retry wrappers — give the page a few chances on slow renders before
+    // we give up. Both functions cap at MAX_FETCH_ATTEMPTS total tries.
+    // Backoff between attempts grows linearly via RETRY_BACKOFF_MS so the
+    // page gets meaningfully more time on each pass.
+
+    // Pass-1 question capture with retry. Returns the captured question
+    // {text, props, qn, tag, correction, correctAnswers} or null if every
+    // attempt failed AND we're not already at end-of-exam.
+    //
+    // Short-circuits when the Next button is disabled — that's a definitive
+    // signal we've reached the end of the exam, so retrying is wasted time.
+    async function captureNewQuestionWithRetry(lastText) {
+        for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+            const q = await waitFor(() => {
+                const cur = getCurrentQuestion();
+                if (!cur) return null;
+                if (lastText && cur.text === lastText) return null;
+                return cur;
+            }, QUESTION_WAIT_MS);
+            if (q) return q;
+
+            // If Next is gone or disabled, we've genuinely reached the end —
+            // retrying just delays the inevitable.
+            const next = getNextBtn();
+            const canAdvance = next
+                && !next.disabled
+                && next.getAttribute('aria-disabled') !== 'true';
+            if (!canAdvance) return null;
+
+            if (attempt < MAX_FETCH_ATTEMPTS) {
+                await sleep(RETRY_BACKOFF_MS * attempt);
+            }
+        }
+        return null;
+    }
+
+    // Correction-reveal wrapper. Same retry/backoff shape as the question
+    // wrapper. Used at both pass-1 and pass-2 reveal sites.
+    async function revealCorrectionWithRetry() {
+        for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+            if (await revealCorrection()) return true;
+            if (attempt < MAX_FETCH_ATTEMPTS) {
+                await sleep(RETRY_BACKOFF_MS * attempt);
+            }
+        }
+        return false;
     }
 
     // Trigger the revealed-correction state on the current question.
@@ -1149,13 +1204,10 @@
         const seenTexts = new Set();
 
         for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
-            const q = await waitFor(() => {
-                const cur = getCurrentQuestion();
-                if (!cur) return null;
-                if (cur.text === lastText) return null;
-                return cur;
-            }, QUESTION_WAIT_MS);
-
+            // Up to MAX_FETCH_ATTEMPTS tries with growing backoff. Returns
+            // null when both the wait timed out AND Next is disabled — the
+            // unambiguous end-of-exam signal.
+            const q = await captureNewQuestionWithRetry(lastText);
             if (!q) break; // no more new questions — exam done
 
             // Stability re-check guards against mid-render captures.
@@ -1181,7 +1233,7 @@
                 if (settings.withCorrection
                     && !correctAnswers
                     && !isCollectiveCorrection(corrBadge)) {
-                    const ok = await revealCorrection();
+                    const ok = await revealCorrectionWithRetry();
                     if (ok) correctAnswers = getCorrectAnswers();
                 }
 

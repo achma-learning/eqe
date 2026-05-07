@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.6.4
+// @version      0.7.0
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -29,6 +29,11 @@
     // ============================================================================
 
     const JOB_KEY            = 'scrape_job_v1';
+    // Batch queue for "Export All Modules". Decoupled from the per-module
+    // job (JOB_KEY) — a single-module scrape is exactly the v0.5.5 flow,
+    // and the queue layered on top tells the script which course to visit
+    // next when a module finishes.
+    const QUEUE_KEY          = 'scrape_batch_queue_v1';
     const COURSE_URL_RE      = /\/dashboard\/course\/[0-9a-f-]+/i;
     const EXAM_URL_RE        = /\/exam\/[0-9a-f-]+/i;
     // Match the dashboard root only (NOT /dashboard/course/... or any
@@ -468,6 +473,20 @@
     function saveJob(job) { GM_setValue(JOB_KEY, JSON.stringify(job)); }
     function clearJob()   { GM_deleteValue(JOB_KEY); }
 
+    // Batch queue helpers. Shape:
+    //   {
+    //     modules:        [{id, name, courseUrl}, ...],
+    //     currentIndex:   0,
+    //     returnUrl:      '...',     // where to go when the batch finishes
+    //     usedFilenames:  [],        // collision guard spans the whole batch
+    //   }
+    function loadQueue() {
+        try { return JSON.parse(GM_getValue(QUEUE_KEY, 'null')); }
+        catch { return null; }
+    }
+    function saveQueue(q) { GM_setValue(QUEUE_KEY, JSON.stringify(q)); }
+    function clearQueue() { GM_deleteValue(QUEUE_KEY); }
+
     // ============================================================================
     // UTILITIES
     // ============================================================================
@@ -892,25 +911,28 @@
     }
 
     // Each module gets its own pair of files (.txt / .md), one pair per
-    // module per batch. exportFiles is invoked from advanceToNextExam
-    // BEFORE advanceToNextModule resets job.data, so the contents of any
-    // single download only ever cover the current module. (Verified at
-    // scrape-eqe.js:1553 export → 1589 reset.)
+    // module per batch. The per-module job is fresh on every course page
+    // (see autoStartCourseScrape and startScrapeFromCoursePage), so
+    // job.data only ever holds the current module's content at export
+    // time.
     //
     // Collision guard: if two modules in the same batch happen to
     // sanitise to the same base name (rare — only if display names are
     // identical), suffix the second with the short course UUID so the
-    // browser doesn't silently overwrite the first download. The set of
-    // used names lives on the job so it survives the per-module data
-    // reset.
+    // browser doesn't silently overwrite the first download. The set
+    // of used names is seeded from the queue (when present) and lifted
+    // back into the queue at end-of-module by advanceToNextExam.
     function exportFiles(job) {
         const s = loadSettings();
         const used = new Set(job.usedFilenames || []);
         let base = sanitizeFilename(job.module || 'module');
 
         if (used.has(base.toLowerCase())) {
-            const id = job.modules?.[job.currentModuleIndex]?.id || '';
-            const shortId = (id || '').slice(0, 8);
+            // Fall back to the course UUID we can read from the URL.
+            const id = location.pathname.match(/\/exam\/([0-9a-f-]+)/i)?.[1]
+                    || location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1]
+                    || '';
+            const shortId = id.slice(0, 8);
             if (shortId) base = `${base}-${shortId}`;
         }
         used.add(base.toLowerCase());
@@ -1277,31 +1299,27 @@
         );
         if (!ok) return;
 
-        // Single-module run is a one-element batch — same code path as
-        // multi-module from the dashboard.
-        const id = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1] || null;
-        const job = {
+        // Per-module job — exactly the v0.5.5 shape, no batch fields.
+        // Multi-module orchestration lives in the queue (QUEUE_KEY), not
+        // in here.
+        saveJob({
             active: true,
-            modules: [{ id, name: moduleName, courseUrl: location.href }],
-            currentModuleIndex: 0,
-            // Per-module state — already populated since we discovered exams here.
             module: moduleName,
             courseUrl: location.href,
             exams,
             currentExamIndex: 0,
             data: {},
             currentExamCount: 0,
-            // Single-module runs return to the course page when done.
-            batchReturnUrl: location.href,
-        };
-        saveJob(job);
+            usedFilenames: [],
+        });
         location.href = exams[0].url;
     }
 
-    // Dashboard "Export All Modules" entry point. Builds a multi-module
-    // batch job; navigation to each course page triggers stepIntoCourse,
-    // which discovers that module's exams in-place and starts the
-    // existing exam-walk flow.
+    // Dashboard "Export All Modules" entry point. Populates the batch
+    // queue and navigates to the first module's course page. From that
+    // point on, each module is scraped exactly like a fresh single-
+    // module run (the v0.5.5 path) — no per-module state lives in the
+    // queue, only the list of where to go next.
     function startScrapeAllModules() {
         const modules = discoverModules();
         log(`startScrapeAllModules: discovered ${modules.length} modules`,
@@ -1320,80 +1338,85 @@
         );
         if (!ok) return;
 
-        const job = {
-            active: true,
+        // Clear any stale per-module job (won't happen on dashboard
+        // routing, but defensive against half-completed runs).
+        clearJob();
+
+        saveQueue({
             modules,
-            currentModuleIndex: 0,
-            // Per-module state is filled in on arrival to each course page.
-            module: null,
-            courseUrl: null,
-            exams: null,        // sentinel: not yet discovered
-            currentExamIndex: 0,
-            data: {},
-            currentExamCount: 0,
-            batchReturnUrl: location.href,  // back to dashboard at the end
-        };
-        saveJob(job);
+            currentIndex: 0,
+            returnUrl: location.href,
+            usedFilenames: [],
+        });
         location.href = modules[0].courseUrl;
     }
 
-    // Called by init() when we land on a course page that matches the
-    // job's currentModuleIndex AND haven't yet discovered exams there
-    // (multi-module batch first arrival on each course). Discovers exams
-    // and kicks off the standard exam-walk.
-    async function stepIntoCourse(job) {
-        const moduleEntry = job.modules[job.currentModuleIndex];
-        log('stepIntoCourse: entering module', {
-            index: job.currentModuleIndex,
+    // Called by init() when we land on a course page with an active
+    // batch queue. Waits for Next.js to finish hydrating the exam cards,
+    // then sets up a single-module job using exactly the v0.5.5 shape
+    // (which is well-tested) and navigates to the first exam.
+    //
+    // If discovery fails after ~30s of retries, the module is skipped
+    // and the queue advances.
+    async function autoStartCourseScrape(queue) {
+        const moduleEntry = queue.modules[queue.currentIndex];
+        log('autoStartCourseScrape: entering module', {
+            index: queue.currentIndex,
             id: moduleEntry?.id,
             name: moduleEntry?.name,
             url: location.href,
         });
-        injectProgressHud(job);
+        // Show a placeholder HUD while we wait for the cards. The real
+        // HUD takes over once the per-module job is saved.
+        injectQueueHud(queue);
 
-        // Retry exam discovery on slow renders. The course page is a Next.js
-        // route, and the exam cards arrive after the route's data fetch —
-        // sometimes seconds after `location.href` returned. Without enough
-        // tolerance the scraper would call discoverExamLinks(), see zero
-        // cards, declare the module empty, and skip to the next one (the
-        // "detected module but never opened the exam page" bug).
-        //
-        // Wait progressively longer on each attempt: 2s, 4s, 6s, 8s, 10s
-        // → total ~30s tolerance for very slow renders.
-        const RETRY_WAITS = [2000, 4000, 6000, 8000, 10000];
+        // Active polling for exam cards beats blind staircase sleeps —
+        // healthy pages get going as soon as the cards land, slow pages
+        // get up to ~30s of total tolerance.
+        const POLL_INTERVAL = 500;
+        const TIMEOUT_MS    = 30000;
+        const start = Date.now();
         let exams = [];
-        for (let i = 0; i < RETRY_WAITS.length; i++) {
-            await sleep(RETRY_WAITS[i]);
+        let pollCount = 0;
+        while (Date.now() - start < TIMEOUT_MS) {
+            await sleep(POLL_INTERVAL);
+            pollCount++;
             exams = discoverExamLinks();
-            log(`stepIntoCourse attempt ${i + 1}: found ${exams.length} exam(s)`);
-            if (exams.length > 0) break;
+            if (exams.length > 0) {
+                log(`autoStartCourseScrape: found ${exams.length} exam(s) ` +
+                    `after ${pollCount} polls (${Date.now() - start}ms)`);
+                break;
+            }
         }
 
         if (exams.length === 0) {
             warn(
-                `stepIntoCourse: gave up on "${moduleEntry?.name}" after ` +
-                `${RETRY_WAITS.length} attempts — discoverExamLinks() returned 0. ` +
-                `Selector was 'a[href*="/exam/"]'. Inspect the page and ` +
-                `report the DOM if cards are visible but undetected.`
+                `autoStartCourseScrape: gave up on "${moduleEntry?.name}" — ` +
+                `discoverExamLinks() returned 0 after ${TIMEOUT_MS}ms. ` +
+                `Selector was 'a[href*="/exam/"]'. Skipping module.`
             );
             showToast(`No exams in "${moduleEntry?.name}" — skipping.`, 'warning');
             await sleep(800);
-            await advanceToNextModule(job);
+            await advanceQueue(queue);
             return;
         }
 
-        // Resolve the module's display name from the page if possible
-        // (matches what the user sees), falling back to the name we
-        // captured on the dashboard.
-        job.module             = getCourseModuleName() || moduleEntry.name;
-        job.courseUrl          = moduleEntry.courseUrl || location.href;
-        job.exams              = exams;
-        job.currentExamIndex   = 0;
-        job.data               = {};
-        job.currentExamCount   = 0;
-        saveJob(job);
+        // Build a fresh single-module job — exactly v0.5.5 shape.
+        const moduleName = getCourseModuleName() || moduleEntry.name;
+        saveJob({
+            active: true,
+            module: moduleName,
+            courseUrl: location.href,
+            exams,
+            currentExamIndex: 0,
+            data: {},
+            currentExamCount: 0,
+            // Inherit the batch's collision guard so duplicate names
+            // across modules get disambiguated.
+            usedFilenames: queue.usedFilenames || [],
+        });
 
-        log(`stepIntoCourse: about to navigate to first exam ${exams[0].url}`);
+        log(`autoStartCourseScrape: navigating to first exam ${exams[0].url}`);
         await sleep(400);
         location.href = exams[0].url;
     }
@@ -1649,8 +1672,9 @@
         job.currentExamIndex += 1;
         saveJob(job);
         if (job.currentExamIndex >= job.exams.length) {
-            // This module is done. Write its files, then either move on
-            // to the next module (multi-module batch) or end the run.
+            // This module is done. Write its files, then either advance
+            // the batch queue (if one is active) or return to where the
+            // single-module run started.
             try {
                 exportFiles(job);
                 const moduleLabel = job.module || 'module';
@@ -1667,23 +1691,42 @@
             } catch (e) {
                 showToast(`Export failed: ${e.message}`, 'error');
             }
+
+            // Lift any newly-recorded usedFilenames into the queue so the
+            // next module's run inherits them and disambiguates collisions.
+            const queue = loadQueue();
+            const courseReturn = job.courseUrl;
+            const newlyUsed = job.usedFilenames || [];
+            if (queue) {
+                queue.usedFilenames = newlyUsed;
+                saveQueue(queue);
+            }
+            clearJob();
+
             await sleep(2500);
-            await advanceToNextModule(job);
+
+            if (queue) {
+                await advanceQueue(queue);
+            } else {
+                // Single-module run: go back to the course page the user
+                // started on.
+                location.href = courseReturn || (location.origin + '/dashboard');
+            }
             return;
         }
         await sleep(500);
         location.href = job.exams[job.currentExamIndex].url;
     }
 
-    async function advanceToNextModule(job) {
-        log(`advanceToNextModule: moving from index ${job.currentModuleIndex} ` +
-            `(${job.modules?.[job.currentModuleIndex]?.name}) → ${job.currentModuleIndex + 1}`);
-        job.currentModuleIndex += 1;
-        if (job.currentModuleIndex >= (job.modules?.length || 0)) {
-            // Whole batch is done.
-            const dest = job.batchReturnUrl || job.courseUrl || location.origin + '/dashboard';
-            const moduleCount = job.modules?.length || 0;
-            clearJob();
+    // Move the batch queue to the next module — or finish the batch.
+    async function advanceQueue(queue) {
+        log(`advanceQueue: ${queue.currentIndex} → ${queue.currentIndex + 1} ` +
+            `(of ${queue.modules.length})`);
+        queue.currentIndex += 1;
+        if (queue.currentIndex >= queue.modules.length) {
+            const dest = queue.returnUrl || (location.origin + '/dashboard');
+            const moduleCount = queue.modules.length;
+            clearQueue();
             if (moduleCount > 1) {
                 showToast(`🏁 Batch complete: ${moduleCount} modules saved.`, 'success');
             }
@@ -1691,20 +1734,9 @@
             location.href = dest;
             return;
         }
-
-        // Reset per-module state so stepIntoCourse on the next page knows
-        // it needs to discover exams. The dashboard-level fields
-        // (modules, currentModuleIndex, batchReturnUrl) are preserved.
-        job.module             = null;
-        job.courseUrl          = null;
-        job.exams              = null;
-        job.currentExamIndex   = 0;
-        job.data               = {};
-        job.currentExamCount   = 0;
-        saveJob(job);
-
+        saveQueue(queue);
         await sleep(500);
-        location.href = job.modules[job.currentModuleIndex].courseUrl;
+        location.href = queue.modules[queue.currentIndex].courseUrl;
     }
 
     // ============================================================================
@@ -1759,22 +1791,55 @@
         const expected    = block?.total || null;
         const ratio       = expected ? `${captured}/${expected}` : `${captured}`;
 
-        // Show "Module i/N: Name" only on multi-module batches; single-
-        // module runs keep the existing one-line layout.
-        const moduleIdx     = (job.currentModuleIndex ?? 0) + 1;
-        const totalModules  = job.modules?.length ?? 1;
-        const moduleLine    = totalModules > 1
-            ? `Module ${moduleIdx}/${totalModules}: <b>${escapeHtml(job.module || '…')}</b>`
+        // Multi-module progress comes from the batch queue (if any) — the
+        // job itself only knows about the current course.
+        const queue = loadQueue();
+        const moduleLine = queue
+            ? `Module ${queue.currentIndex + 1}/${queue.modules.length}: <b>${escapeHtml(job.module || queue.modules[queue.currentIndex]?.name || '…')}</b>`
             : `Module: <b>${escapeHtml(job.module || '…')}</b>`;
 
-        // Hide the exam line entirely until exams are discovered (e.g.
-        // briefly while stepIntoCourse runs at the top of each module).
+        // Hide the exam line until exams are discovered (briefly true at
+        // the top of each batch module while autoStartCourseScrape polls).
         const examLine = totalExams > 0
             ? `Exam ${examIdx}/${totalExams}: <b>${escapeHtml(examTitle || '')}</b><br>` +
               `Questions captured: <b>${ratio}</b>`
             : `<i style="opacity:0.7;">discovering exams…</i>`;
 
         el.innerHTML = `${moduleLine}<br>${examLine}`;
+    }
+
+    // Lightweight HUD shown by autoStartCourseScrape while polling for
+    // exam cards (before the per-module job exists). Once the job is
+    // saved and we navigate to the first exam, the regular HUD takes
+    // over via injectProgressHud().
+    function injectQueueHud(queue) {
+        if (document.getElementById('eqe-scraper-hud')) return;
+        const hud = document.createElement('div');
+        hud.id = 'eqe-scraper-hud';
+        Object.assign(hud.style, {
+            position: 'fixed', top: '70px', right: '20px', zIndex: 2000000,
+            padding: '12px 16px', background: 'rgba(17,24,39,0.95)',
+            color: 'white', borderRadius: '12px',
+            font: '500 12px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)', minWidth: '240px',
+        });
+        const cur = queue.modules[queue.currentIndex];
+        hud.innerHTML = `
+            <div style="font-weight:700;margin-bottom:6px;">📦 Batch in progress</div>
+            <div style="opacity:0.85;">Module ${queue.currentIndex + 1}/${queue.modules.length}: <b>${escapeHtml(cur?.name || '…')}</b><br><i style="opacity:0.7;">discovering exams…</i></div>
+            <button id="eqe-scraper-hud-stop" style="margin-top:10px;width:100%;padding:6px;border:none;border-radius:6px;background:#ef4444;color:white;cursor:pointer;font:600 11px system-ui;">⏹ Stop & Discard</button>
+        `;
+        document.body.appendChild(hud);
+        document.getElementById('eqe-scraper-hud-stop').onclick = () => {
+            if (window.confirm('Stop batch and discard collected data?')) {
+                const q = loadQueue();
+                clearJob();
+                clearQueue();
+                showToast('Batch stopped.', 'warning');
+                if (q?.returnUrl) location.href = q.returnUrl;
+                else location.href = location.origin + '/dashboard';
+            }
+        };
     }
 
     function escapeHtml(s) {
@@ -1796,21 +1861,21 @@
     }
 
     function init() {
-        const job = loadJob();
+        const job   = loadJob();
+        const queue = loadQueue();
 
         if (isDashboardPage()) {
-            // Reaching the dashboard with an active job means either the
-            // batch just finished (advanceToNextModule already cleared)
-            // or the user navigated here mid-run. In the second case,
-            // clear the stale job so they can start fresh.
+            // Reaching the dashboard with an active job is a sign the user
+            // navigated here mid-run; clear it so they can start fresh.
+            // An active queue with no job means the batch just completed
+            // (advanceQueue cleared the queue before navigation) — nothing
+            // to do but show the button.
             if (job?.active) clearJob();
             injectDashboardButton();
 
             // If the user clicked "📦 Export All" from a course page,
             // we landed here with the pending flag set. Auto-trigger
-            // the batch once the module cards have rendered. The
-            // confirmation dialog inside startScrapeAllModules still
-            // gives them a way out.
+            // the batch once the module cards have rendered.
             if (GM_getValue('scrape_pending_batch', false)) {
                 GM_deleteValue('scrape_pending_batch');
                 setTimeout(startScrapeAllModules, 1500);
@@ -1819,38 +1884,30 @@
         }
 
         if (isCoursePage()) {
-            // Multi-module batch: arrival on the course we're currently
-            // processing -> step into it. We accept this even if `exams`
-            // is already populated (re-step to refresh) — better than
-            // nuking the job and confusing the user mid-batch.
-            const expected = job?.modules?.[job?.currentModuleIndex];
-            const onExpectedCourse = expected && expected.id === currentCourseId();
-
-            if (job?.active && onExpectedCourse) {
-                if (!job.exams || job.exams.length === 0) {
-                    log('init: course page matches batch position, calling stepIntoCourse');
-                } else {
-                    log('init: course page matches batch position but exams already populated; re-stepping');
-                    job.exams = null; // force re-discovery
-                    saveJob(job);
-                }
-                stepIntoCourse(job);
-                return;
-            }
-
-            // We're on a course page but the active job (if any) doesn't
-            // match this URL. Two sub-cases:
-            //   (a) batch active and we drifted onto a different course
-            //       (user clicked elsewhere) — clear and show the button.
-            //   (b) no batch — show the single-course buttons normally.
+            // If the per-module job is already active on a course page,
+            // the user must have hit "back" mid-exam — clear and start
+            // fresh. (Active jobs are normally only ever seen on /exam/*.)
             if (job?.active) {
-                warn(
-                    'init: active job does not match this course URL ' +
-                    `(expected ${expected?.id}, got ${currentCourseId()}). ` +
-                    'Clearing the stale job.'
-                );
+                warn('init: active per-module job seen on course page; clearing');
                 clearJob();
             }
+
+            // If a batch queue is active and we're on the expected next
+            // course, auto-trigger the v0.5.5-style scrape for it.
+            if (queue && queue.currentIndex < queue.modules.length) {
+                const expected = queue.modules[queue.currentIndex];
+                if (expected.id === currentCourseId()) {
+                    log('init: queue active, on expected course → autoStartCourseScrape');
+                    autoStartCourseScrape(queue);
+                    return;
+                }
+                warn(
+                    `init: queue mismatch — expected ${expected.id}, got ${currentCourseId()}. ` +
+                    'User probably navigated away mid-batch; clearing queue.'
+                );
+                clearQueue();
+            }
+
             injectStartButton();
             return;
         }

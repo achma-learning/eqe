@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.4
+// @version      0.5.5
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -1056,7 +1056,7 @@
                 </label>
                 <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
                     <input type="radio" name="eqe-corr" id="eqe-corr-on" value="on" ${s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
-                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question (e.g. "= A,B,C"). <b>Side effect:</b> the scraper clicks an answer per question to reveal the correction, so your progress on the site will be marked.</div></div>
+                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question (e.g. "= A,B,C"). <b>Side effect:</b> the scraper clicks an answer per question to reveal the correction, so your progress on the site will be marked. <b>Correction collective</b> exams are skipped — only the question + propositions are scraped, no answer click, no correction line.</div></div>
                 </label>
             </div>
 

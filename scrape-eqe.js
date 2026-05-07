@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.5
+// @version      0.5.6
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -903,20 +903,31 @@
     // ============================================================================
 
     function discoverExamLinks() {
-        const seen = new Set();
+        // Dedup by the exam UUID (the canonical identifier), not the full
+        // URL. Two anchors pointing at the same exam can otherwise produce
+        // keys that differ only by:
+        //   - trailing slash      ("/exam/<id>" vs "/exam/<id>/")
+        //   - query parameters    ("/exam/<id>?from=course")
+        //   - SSR/hydration twins (Next.js briefly renders the same card
+        //                          in two separate DOM subtrees during the
+        //                          hydration window — clicking "Scrape"
+        //                          in that window used to give 2× cards)
+        // UUID dedup is immune to all three.
+        const seenIds = new Set();
         const exams = [];
         document.querySelectorAll('a[href*="/exam/"]').forEach(a => {
-            const href = a.href;
-            const m = href.match(EXAM_URL_RE);
+            const m = a.href.match(/\/exam\/([0-9a-f-]+)/i);
             if (!m) return;
-            // Normalize to drop hash/query so we don't visit the same exam twice.
-            const url = href.split('#')[0].split('?')[0];
-            if (seen.has(url)) return;
-            seen.add(url);
+            const id = m[1].toLowerCase();
+            if (seenIds.has(id)) return;
+            seenIds.add(id);
+
+            // Canonical URL form: drop hash/query/trailing slash.
+            const url = a.href.split('#')[0].split('?')[0].replace(/\/$/, '');
 
             const titleEl = a.querySelector('h3, h2, [class*="title"]');
             const title = (titleEl?.textContent || a.textContent || '').trim() ||
-                          `Exam ${m[0].split('/').pop().slice(0, 8)}`;
+                          `Exam ${id.slice(0, 8)}`;
             exams.push({ url, title });
         });
         return exams;

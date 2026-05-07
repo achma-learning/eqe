@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.6.1
+// @version      0.6.3
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -847,8 +847,11 @@
 
     function buildPlainText(job, settings = loadSettings()) {
         const withCorr = !!settings.withCorrection;
-        // .txt mirrors the .md content but without markdown markers, matching
-        // the user's spec "like in original page".
+        // Visual decorations applied to the .txt output (.md keeps real
+        // Markdown headings, those don't need extra glyphs):
+        //   //  before every exam-URL line (e.g. "// Ratt 2025 (...)")
+        //   #   before every question heading ("# Ratt 2025 Q1 - <tag>")
+        //   N.  before every question prompt ("1. <text>")
         const lines = [];
         lines.push(job.module);
         lines.push('');
@@ -859,14 +862,14 @@
             lines.push('---');
             lines.push('');
             const corr = block.correction ? ` (${block.correction})` : '';
-            lines.push(`${examTitle}${corr} : ${block.url}`);
+            lines.push(`// ${examTitle}${corr} : ${block.url}`);
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
                 const suffix = q.tag ? ` - ${q.tag}` : '';
-                lines.push(`${examTitle} Q${num}${suffix}`);
+                lines.push(`# ${examTitle} Q${num}${suffix}`);
                 lines.push('');
-                lines.push(q.text);
+                lines.push(`${num}. ${q.text}`);
                 lines.push('');
                 q.props.forEach(p => lines.push(p));
                 lines.push('');
@@ -1022,6 +1025,11 @@
     function injectStartButton() {
         if (document.getElementById('eqe-scraper-btn')) return;
 
+        // Three buttons total on course pages, right-anchored:
+        //   ⚙️ (gear)   →  📥 Scrape Course   →  📦 Export All
+        // The gear sits flush right; the green/blue buttons stack to its
+        // left so a user mid-course can pick "just this one" or "every
+        // module from the dashboard, starting now".
         const btn = document.createElement('button');
         btn.id = 'eqe-scraper-btn';
         btn.textContent = '📥 Scrape Course';
@@ -1041,6 +1049,41 @@
         });
         btn.onclick = startScrapeFromCoursePage;
         document.body.appendChild(btn);
+
+        // "Export All" on a course page navigates to the dashboard
+        // (where we can discover every module) before kicking off the
+        // batch run — it isn't possible to enumerate modules from a
+        // course page directly.
+        const all = document.createElement('button');
+        all.id = 'eqe-scraper-batch-btn';
+        all.textContent = '📦 Export All';
+        all.title = 'Open dashboard and scrape every module';
+        Object.assign(all.style, {
+            position: 'fixed',
+            top: '70px',
+            right: '210px',
+            zIndex: 2000000,
+            padding: '10px 14px',
+            background: 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            font: '600 13px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+        });
+        all.onclick = () => {
+            // Auto-trigger the batch on dashboard arrival. We can't
+            // discover modules from a course page (the cards aren't
+            // there), so we set a pending flag, navigate to /dashboard,
+            // and init() picks it up and calls startScrapeAllModules()
+            // after the page settles. The startScrapeAllModules confirm
+            // dialog still appears, so the user has a final chance to
+            // back out.
+            GM_setValue('scrape_pending_batch', true);
+            location.href = location.origin + '/dashboard';
+        };
+        document.body.appendChild(all);
 
         injectGearButton();
     }
@@ -1292,10 +1335,21 @@
     // and kicks off the standard exam-walk.
     async function stepIntoCourse(job) {
         injectProgressHud(job);
-        await sleep(PAGE_SETTLE_MS);
+
+        // Retry exam discovery on slow renders. The course page is a Next.js
+        // route — `location.href` returns before the cards are in the DOM
+        // on slower connections, so a single PAGE_SETTLE_MS wait was
+        // sometimes finding zero exams and skipping the entire module
+        // (the "detected module but never opened the exam page" bug).
+        // Wait progressively longer on each attempt: 1.5s → 3.0s → 4.5s.
+        let exams = [];
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            await sleep(PAGE_SETTLE_MS * attempt);
+            exams = discoverExamLinks();
+            if (exams.length > 0) break;
+        }
 
         const moduleEntry = job.modules[job.currentModuleIndex];
-        const exams = discoverExamLinks();
 
         if (exams.length === 0) {
             showToast(`No exams in "${moduleEntry.name}" — skipping.`, 'warning');
@@ -1724,6 +1778,16 @@
             // clear the stale job so they can start fresh.
             if (job?.active) clearJob();
             injectDashboardButton();
+
+            // If the user clicked "📦 Export All" from a course page,
+            // we landed here with the pending flag set. Auto-trigger
+            // the batch once the module cards have rendered. The
+            // confirmation dialog inside startScrapeAllModules still
+            // gives them a way out.
+            if (GM_getValue('scrape_pending_batch', false)) {
+                GM_deleteValue('scrape_pending_batch');
+                setTimeout(startScrapeAllModules, 1500);
+            }
             return;
         }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -39,6 +39,11 @@
     const STABILITY_DELAY_MS = 250;
     // Pause after clicking next or a sidebar Q-link.
     const POST_CLICK_PAUSE_MS = 200;
+    // Slower, safer pause used during the surgical gap-fill pass — gives
+    // React more time to settle so we can trust the Qn indicator we read.
+    const SURGICAL_PAUSE_MS  = 500;
+    // Maximum number of surgical gap-fill rounds before giving up.
+    const MAX_GAP_FILL_ROUNDS = 3;
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
@@ -82,6 +87,12 @@
         document.querySelector('button[aria-label="Go to next question"]') ||
         Array.from(document.querySelectorAll('button')).find(b =>
             /next|suivant/i.test(b.textContent || '')
+        );
+
+    const getPrevBtn = () =>
+        document.querySelector('button[aria-label="Go to previous question"]') ||
+        Array.from(document.querySelectorAll('button')).find(b =>
+            /prev|précédent|precedent/i.test(b.textContent || '')
         );
 
     // Current Q-number indicator from the DOM:
@@ -697,42 +708,98 @@
             await sleep(POST_CLICK_PAUSE_MS);
         }
 
-        // -------------- PASS 2: gap-fill via sidebar Q-links --------------
-        // If the page exposes a total, find any qn we don't have and try to
-        // navigate to it directly. This recovers the 47/50 / 32/50 cases
-        // where the linear walk dropped one or more questions mid-exam.
+        // -------------- PASS 2: SURGICAL gap-fill --------------
+        // For each missing Qn we navigate via the closest captured neighbor:
+        //   strategy A: jump to Q[n-1] in the sidebar, click Next  -> Qn
+        //   strategy B: jump to Q[n+1] in the sidebar, click Prev  -> Qn
+        //   strategy C: click Q[n] in the sidebar directly (last resort)
+        // After every click we verify against the page's Qn indicator
+        // before accepting the capture, and we use a slower SURGICAL_PAUSE
+        // so React is fully settled. Up to MAX_GAP_FILL_ROUNDS (3) rounds.
         const total = job.data[examTitle].total;
         if (total) {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                const map = indexByQn(captured);
+            for (let round = 0; round < MAX_GAP_FILL_ROUNDS; round++) {
+                const have = indexByQn(captured);
                 const missing = [];
-                for (let n = 1; n <= total; n++) if (!map[n]) missing.push(n);
+                for (let n = 1; n <= total; n++) if (!have[n]) missing.push(n);
                 if (missing.length === 0) break;
 
+                let recovered = 0;
                 for (const n of missing) {
-                    const link = getSidebarQLink(n);
-                    if (!link) continue;
-                    link.click();
-                    await sleep(POST_CLICK_PAUSE_MS);
-                    const got = await captureStableQuestion(QUESTION_WAIT_MS);
+                    const got = await navigateToMissing(n, have, total);
                     if (!got) continue;
-                    // Trust the visible Qn over our target (in case the
-                    // sidebar item renumbered after a refresh).
+
+                    // Trust the indicator: prefer the qn the page actually
+                    // shows over our requested target.
                     const realQn = got.qn ?? n;
-                    if (!seenTexts.has(got.text) && !indexByQn(captured)[realQn]) {
-                        captured.push({ qn: realQn, text: got.text, props: got.props });
-                        seenTexts.add(got.text);
-                    }
+                    if (seenTexts.has(got.text)) continue;
+                    if (indexByQn(captured)[realQn]) continue;
+
+                    captured.push({ qn: realQn, text: got.text, props: got.props });
+                    seenTexts.add(got.text);
+                    recovered++;
                 }
 
                 job.data[examTitle].questions = stitchNeighbors(captured);
                 job.currentExamCount = captured.length;
                 saveJob(job);
                 updateProgressHud(job, examTitle);
+
+                if (recovered === 0) break; // no progress this round, give up
             }
         }
 
         await advanceToNextExam(job);
+    }
+
+    // Surgical navigation to a single missing question. Returns the captured
+    // {qn, text, props} or null if every strategy failed. Verifies the page's
+    // Qn indicator after each click before accepting.
+    async function navigateToMissing(targetN, capturedMap, total) {
+        // Strategy A — neighbor before, then click Next.
+        if (targetN > 1 && capturedMap[targetN - 1]) {
+            const got = await tryNeighborStep(targetN - 1, targetN, 'next');
+            if (got) return got;
+        }
+        // Strategy B — neighbor after, then click Prev.
+        if (targetN < total && capturedMap[targetN + 1]) {
+            const got = await tryNeighborStep(targetN + 1, targetN, 'prev');
+            if (got) return got;
+        }
+        // Strategy C — direct sidebar Q-link.
+        const direct = getSidebarQLink(targetN);
+        if (direct) {
+            direct.click();
+            await sleep(SURGICAL_PAUSE_MS);
+            const got = await captureStableQuestion(QUESTION_WAIT_MS);
+            if (got && (got.qn == null || got.qn === targetN)) return got;
+        }
+        return null;
+    }
+
+    async function tryNeighborStep(neighborN, targetN, direction) {
+        const link = getSidebarQLink(neighborN);
+        if (!link) return null;
+        link.click();
+        await sleep(SURGICAL_PAUSE_MS);
+
+        // Confirm we landed on the neighbor before stepping. If the sidebar
+        // click missed for any reason (DOM swap, intercepted click), bail
+        // out so we don't accidentally step onto the wrong question.
+        const land = await captureStableQuestion(QUESTION_WAIT_MS);
+        if (!land || (land.qn != null && land.qn !== neighborN)) return null;
+
+        const btn = direction === 'next' ? getNextBtn() : getPrevBtn();
+        if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return null;
+        btn.click();
+        await sleep(SURGICAL_PAUSE_MS);
+
+        const got = await captureStableQuestion(QUESTION_WAIT_MS);
+        if (!got) return null;
+        // Accept only if the indicator confirms targetN, OR the indicator
+        // is missing entirely (in which case we trust the click).
+        if (got.qn != null && got.qn !== targetN) return null;
+        return got;
     }
 
     async function advanceToNextExam(job) {

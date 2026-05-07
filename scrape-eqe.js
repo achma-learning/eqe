@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.4.1
+// @version      0.4.4
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -68,17 +68,33 @@
     }
 
     // ============================================================================
-    // SELECTORS  (mirrored from +++ userscript.txt — keep in sync)
+    // SELECTORS  (anchored to the e-qe.online HTML templates the user
+    // documented; keep in sync with +++ userscript.txt)
     // ============================================================================
 
-    const getQuestionEl = () => document.querySelector('h2');
+    // Question text:
+    //   <h2 class="text-base sm:text-lg font-semibold ... break-words">…</h2>
+    // We try the exact-class match first, then any h2 (works on slightly
+    // older renders or A/B variants).
+    const getQuestionEl = () =>
+        document.querySelector('h2.text-base.font-semibold') ||
+        document.querySelector('h2.font-semibold') ||
+        document.querySelector('h2');
 
+    // Answer buttons:
+    //   <div class="group ... rounded-2xl border …">
+    //     <div class="relative z-10 flex items-center gap-4">
+    //       <div>…<span class="… font-black …">A</span></div>   ← letter badge
+    //       <span class="relative z-10 flex-1 …">Pemphigus profond</span>  ← prop text
+    //     </div>
+    //   </div>
     const getAnswerButtons = () => {
         const containers = document.querySelectorAll(
             'div.group.relative.w-full.overflow-hidden.rounded-2xl.border'
         );
         return Array.from(containers).filter(c => {
-            const label = c.firstElementChild?.firstElementChild?.textContent?.trim();
+            const labelEl = c.querySelector('span.font-black');
+            const label = labelEl?.textContent?.trim();
             return label && LABELS.includes(label);
         });
     };
@@ -96,10 +112,8 @@
         );
 
     // Current Q-number indicator from the DOM:
-    //   <div class="text-sm font-black border-b border-white/10 pb-1.5 leading-none ...">2</div>
-    // We match by the distinctive class combo (text-sm + font-black) and
-    // require the text to be a bare integer. This is much more reliable
-    // than scraping it from a heading regex.
+    //   <div class="text-sm font-black  border-b border-white/10 pb-1.5 …">7</div>
+    // Match the distinctive class combo + a bare integer.
     function getCurrentQuestionNumber() {
         const nodes = document.querySelectorAll('div.text-sm.font-black');
         const matches = [];
@@ -111,19 +125,29 @@
             if (n >= 1 && n <= 999) matches.push({ n, el });
         });
         if (matches.length === 0) return null;
-        // If multiple match, prefer the one not inside aside/nav (the
+        // If multiple match, prefer the one outside aside/nav (the
         // big indicator next to the question, not a sidebar Q-list item).
         const main = matches.find(m => !m.el.closest('aside, nav, [class*="sidebar"]'));
         return (main || matches[0]).n;
     }
 
-    // Total questions in the exam. The "current Qn" indicator usually has
-    // a sibling with the total ("1" on top, "50" below, separated by a
-    // border). We pick the largest sibling-integer in the same parent.
-    // Falls back to the sidebar's "n / N" indicator.
+    // Total questions in the exam — sibling of the current Qn indicator:
+    //   <div class="text-sm font-bold opacity-30 pt-1 …">50</div>
+    // Direct anchor first, then sibling-int fallback, then sidebar "n / N".
     function getTotalQuestions() {
-        const nodes = document.querySelectorAll('div.text-sm.font-black');
-        for (const el of nodes) {
+        const direct = document.querySelectorAll(
+            'div.text-sm.font-bold.opacity-30'
+        );
+        for (const el of direct) {
+            if (el.children.length > 0) continue;
+            const txt = el.textContent?.trim();
+            if (!/^\d+$/.test(txt || '')) continue;
+            const n = parseInt(txt, 10);
+            if (n > 0 && n < 500) return n;
+        }
+        // Fallback 1: sibling integer of the current-Qn indicator.
+        const curNodes = document.querySelectorAll('div.text-sm.font-black');
+        for (const el of curNodes) {
             if (el.children.length > 0) continue;
             const txt = el.textContent?.trim();
             if (!/^\d+$/.test(txt || '')) continue;
@@ -137,7 +161,7 @@
                 .filter(n => n > 1 && n < 500);
             if (sibInts.length > 0) return Math.max(...sibInts);
         }
-        // Sidebar fallback: scan for "n / N".
+        // Fallback 2: sidebar "n / N".
         const sidebar = document.querySelector('aside') || document.body;
         const cands = sidebar.querySelectorAll('button, a, li, div, span');
         for (const el of cands) {
@@ -162,6 +186,30 @@
             if (m && parseInt(m[1], 10) === n) {
                 return el.closest('button, a') || el;
             }
+        }
+        return null;
+    }
+
+    // Per-question topic tag from the breadcrumb lesson link:
+    //   <a data-slot="breadcrumb-link"
+    //      class="font-medium … text-[13px] truncate …"
+    //      href="/lesson/<uuid>?current=<uuid>">Dermatose bulleuse</a>
+    // Each question can have a different tag (the breadcrumb updates as
+    // you walk through the exam), so we capture it alongside the text.
+    // Heuristic fallback scans any anchor that links to /lesson/.
+    function getQuestionTag() {
+        const direct = document.querySelector(
+            'a[data-slot="breadcrumb-link"][href*="/lesson/"]'
+        );
+        const txt = direct?.textContent?.trim();
+        if (txt) return txt;
+        // Heuristic fallback: any /lesson/ anchor on the page that isn't
+        // empty and isn't a stray sidebar item.
+        const candidates = document.querySelectorAll('a[href*="/lesson/"]');
+        for (const a of candidates) {
+            if (a.closest('aside, nav[class*="sidebar"]')) continue;
+            const t = a.textContent?.trim();
+            if (t && t.length > 0 && t.length < 80) return t;
         }
         return null;
     }
@@ -279,18 +327,32 @@
         if (btns.length === 0) return null;
 
         const props = btns.map((btn, i) => {
-            const label = LABELS[i] || String(i + 1);
-            const parts = [];
-            btn.querySelectorAll('p, span').forEach(el => {
-                const t = el.textContent.trim();
-                if (t && !LABELS.includes(t) && t.length > 0) parts.push(t);
-            });
-            const propText = parts.join(' ').trim() ||
-                btn.textContent.replace(/^[A-E]\s*/, '').trim();
+            // Letter badge: <span class="… font-black …">A</span>
+            const labelEl = btn.querySelector('span.font-black');
+            const label = labelEl?.textContent?.trim() || LABELS[i] || String(i + 1);
+            // Proposition text: <span class="relative z-10 flex-1 …">…</span>
+            const textEl = btn.querySelector('span.flex-1');
+            let propText = textEl?.textContent?.trim();
+            if (!propText) {
+                // Fallback for older / variant renders: join every p/span
+                // that isn't the bare letter badge.
+                const parts = [];
+                btn.querySelectorAll('p, span').forEach(el => {
+                    const t = el.textContent.trim();
+                    if (t && !LABELS.includes(t) && t.length > 0) parts.push(t);
+                });
+                propText = parts.join(' ').trim() ||
+                    btn.textContent.replace(/^[A-E]\s*/, '').trim();
+            }
             return `${label}] ${propText}`;
         });
 
-        return { text, props, qn: getCurrentQuestionNumber() };
+        return {
+            text,
+            props,
+            qn:  getCurrentQuestionNumber(),
+            tag: getQuestionTag(),
+        };
     }
 
     // Read the question, wait STABILITY_DELAY_MS, read again, only accept
@@ -316,14 +378,28 @@
     // The exam page shows a heading like "normal 2026 Q1" or "Octobre 2024 Q3"
     // right above each question — we strip the "Q<n>" suffix to get the exam
     // title. Fallback chain:
-    //   1. Any element whose text matches "<title> Q<digits>"
-    //   2. The middle item of the breadcrumb (e.g. "normal 2026")
-    //   3. The sidebar's exam-name header
-    //   4. "Exam <shortId>" from the URL
+    //   1. <span class="truncate font-medium …">Novembre 2024</span>
+    //      (the dedicated exam-name span the user documented)
+    //   2. Any element whose text matches "<title> Q<digits>"
+    //   3. The middle item of the breadcrumb (e.g. "normal 2026")
+    //   4. The sidebar's exam-name header
+    //   5. "Exam <shortId>" from the URL
     function getExamTitle(fallbackUrl) {
+        // 1) Direct anchor: span.truncate.font-medium with a sane title.
+        const dedicated = document.querySelectorAll('span.truncate.font-medium');
+        for (const el of dedicated) {
+            const txt = el.textContent?.trim();
+            if (txt && txt.length > 0 && txt.length < 80) {
+                // Strip a trailing "<digits>%" defensively (sidebar progress
+                // sometimes shares this class set).
+                const cleaned = txt.replace(/\s*\d+\s*%\s*$/, '').trim();
+                if (cleaned) return cleaned;
+            }
+        }
+
         const Q_SUFFIX_RE = /^(.+?)\s+Q\s*\d+\s*$/i;
 
-        // 1) Find the "<title> Q<n>" heading. Start with proper heading tags
+        // 2) Find the "<title> Q<n>" heading. Start with proper heading tags
         //    and title-classed elements, then fall back to leaf spans/divs.
         const questionText = getQuestionEl()?.textContent?.trim();
         const tryMatch = (sel) => {
@@ -448,8 +524,30 @@
             const expected = block.total || captured;
             const word = captured === 1 ? 'Question' : 'Questions';
             if (expected && captured < expected) {
-                const missing = expected - captured;
-                lines.push(`${title} = ${captured}/${expected} ${word} (${missing} missing)`);
+                // List the specific missing Qns: any qn in 1..expected
+                // that is not present in block.questions. Rendered as
+                // "Q1, Q2, Q5". Cap the list at 20 entries to keep
+                // the header readable for catastrophic failures.
+                const have = new Set(
+                    (block.questions || [])
+                        .map(q => q.qn)
+                        .filter(n => Number.isInteger(n))
+                );
+                const missingNs = [];
+                for (let n = 1; n <= expected; n++) if (!have.has(n)) missingNs.push(n);
+                const count = missingNs.length;
+                const MAX_LISTED = 20;
+                const list = missingNs.slice(0, MAX_LISTED).map(n => `Q${n}`).join(', ');
+                const suffix = missingNs.length > MAX_LISTED
+                    ? `${list}, … +${missingNs.length - MAX_LISTED} more`
+                    : list;
+                if (count > 0 && suffix) {
+                    lines.push(`${title} = ${captured}/${expected} ${word} (${count} missing = ${suffix})`);
+                } else {
+                    // Fallback when we can't identify which Qns are missing
+                    // (e.g. captures lacked qn tags throughout).
+                    lines.push(`${title} = ${captured}/${expected} ${word} (${expected - captured} missing)`);
+                }
             } else {
                 lines.push(`${title} = ${captured} ${word}`);
             }
@@ -483,7 +581,8 @@
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
-                lines.push(`### ${examTitle} Q${num}`);
+                const suffix = q.tag ? ` - ${q.tag}` : '';
+                lines.push(`### ${examTitle} Q${num}${suffix}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -513,7 +612,8 @@
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
-                lines.push(`${examTitle} Q${num}`);
+                const suffix = q.tag ? ` - ${q.tag}` : '';
+                lines.push(`${examTitle} Q${num}${suffix}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -685,7 +785,12 @@
             // Skip if we've already captured this exact text (defends against
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
-                captured.push({ qn: q.qn ?? null, text: q.text, props: q.props });
+                captured.push({
+                    qn:    q.qn ?? null,
+                    text:  q.text,
+                    props: q.props,
+                    tag:   q.tag ?? null,
+                });
                 seenTexts.add(q.text);
                 job.data[examTitle].questions = stitchNeighbors(captured);
                 job.currentExamCount = captured.length;
@@ -735,7 +840,12 @@
                     if (seenTexts.has(got.text)) continue;
                     if (indexByQn(captured)[realQn]) continue;
 
-                    captured.push({ qn: realQn, text: got.text, props: got.props });
+                    captured.push({
+                        qn:    realQn,
+                        text:  got.text,
+                        props: got.props,
+                        tag:   got.tag ?? null,
+                    });
                     seenTexts.add(got.text);
                     recovered++;
                 }

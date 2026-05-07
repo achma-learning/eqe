@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.4.3
+// @version      0.4.4
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -190,6 +190,30 @@
         return null;
     }
 
+    // Per-question topic tag from the breadcrumb lesson link:
+    //   <a data-slot="breadcrumb-link"
+    //      class="font-medium … text-[13px] truncate …"
+    //      href="/lesson/<uuid>?current=<uuid>">Dermatose bulleuse</a>
+    // Each question can have a different tag (the breadcrumb updates as
+    // you walk through the exam), so we capture it alongside the text.
+    // Heuristic fallback scans any anchor that links to /lesson/.
+    function getQuestionTag() {
+        const direct = document.querySelector(
+            'a[data-slot="breadcrumb-link"][href*="/lesson/"]'
+        );
+        const txt = direct?.textContent?.trim();
+        if (txt) return txt;
+        // Heuristic fallback: any /lesson/ anchor on the page that isn't
+        // empty and isn't a stray sidebar item.
+        const candidates = document.querySelectorAll('a[href*="/lesson/"]');
+        for (const a of candidates) {
+            if (a.closest('aside, nav[class*="sidebar"]')) continue;
+            const t = a.textContent?.trim();
+            if (t && t.length > 0 && t.length < 80) return t;
+        }
+        return null;
+    }
+
     // ============================================================================
     // JOB STATE  (persisted across page navigations via GM storage)
     // ============================================================================
@@ -323,7 +347,12 @@
             return `${label}] ${propText}`;
         });
 
-        return { text, props, qn: getCurrentQuestionNumber() };
+        return {
+            text,
+            props,
+            qn:  getCurrentQuestionNumber(),
+            tag: getQuestionTag(),
+        };
     }
 
     // Read the question, wait STABILITY_DELAY_MS, read again, only accept
@@ -552,7 +581,8 @@
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
-                lines.push(`### ${examTitle} Q${num}`);
+                const suffix = q.tag ? ` - ${q.tag}` : '';
+                lines.push(`### ${examTitle} Q${num}${suffix}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -582,7 +612,8 @@
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
-                lines.push(`${examTitle} Q${num}`);
+                const suffix = q.tag ? ` - ${q.tag}` : '';
+                lines.push(`${examTitle} Q${num}${suffix}`);
                 lines.push('');
                 lines.push(q.text);
                 lines.push('');
@@ -754,7 +785,12 @@
             // Skip if we've already captured this exact text (defends against
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
-                captured.push({ qn: q.qn ?? null, text: q.text, props: q.props });
+                captured.push({
+                    qn:    q.qn ?? null,
+                    text:  q.text,
+                    props: q.props,
+                    tag:   q.tag ?? null,
+                });
                 seenTexts.add(q.text);
                 job.data[examTitle].questions = stitchNeighbors(captured);
                 job.currentExamCount = captured.length;
@@ -804,7 +840,12 @@
                     if (seenTexts.has(got.text)) continue;
                     if (indexByQn(captured)[realQn]) continue;
 
-                    captured.push({ qn: realQn, text: got.text, props: got.props });
+                    captured.push({
+                        qn:    realQn,
+                        text:  got.text,
+                        props: got.props,
+                        tag:   got.tag ?? null,
+                    });
                     seenTexts.add(got.text);
                     recovered++;
                 }

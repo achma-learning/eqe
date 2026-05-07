@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.0
+// @version      0.5.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -56,18 +56,20 @@
         safe:   { post: 400, surgical: 800, stability: 400 },
     };
     const DEFAULT_SETTINGS = {
-        speed:     'normal',                // 'fast' | 'normal' | 'safe' | 'custom'
-        custom:    { post: 200, surgical: 500, stability: 250 },
-        outputTxt: true,
-        outputMd:  false,
+        speed:           'normal',                // 'fast' | 'normal' | 'safe' | 'custom'
+        custom:          { post: 200, surgical: 500, stability: 250 },
+        outputTxt:       true,
+        outputMd:        false,
+        withCorrection:  false,                    // include the correction line per question
     };
 
     function loadSettings() {
         const s = {
-            speed:     GM_getValue('scrape_speed',     DEFAULT_SETTINGS.speed),
-            custom:    GM_getValue('scrape_speed_custom', DEFAULT_SETTINGS.custom),
-            outputTxt: GM_getValue('scrape_output_txt', DEFAULT_SETTINGS.outputTxt),
-            outputMd:  GM_getValue('scrape_output_md',  DEFAULT_SETTINGS.outputMd),
+            speed:          GM_getValue('scrape_speed',          DEFAULT_SETTINGS.speed),
+            custom:         GM_getValue('scrape_speed_custom',   DEFAULT_SETTINGS.custom),
+            outputTxt:      GM_getValue('scrape_output_txt',     DEFAULT_SETTINGS.outputTxt),
+            outputMd:       GM_getValue('scrape_output_md',      DEFAULT_SETTINGS.outputMd),
+            withCorrection: GM_getValue('scrape_with_correction', DEFAULT_SETTINGS.withCorrection),
         };
         const preset = s.speed === 'custom'
             ? s.custom
@@ -78,10 +80,11 @@
         return s;
     }
     function saveSettings(s) {
-        GM_setValue('scrape_speed',         s.speed);
-        GM_setValue('scrape_speed_custom',  s.custom);
-        GM_setValue('scrape_output_txt',    !!s.outputTxt);
-        GM_setValue('scrape_output_md',     !!s.outputMd);
+        GM_setValue('scrape_speed',           s.speed);
+        GM_setValue('scrape_speed_custom',    s.custom);
+        GM_setValue('scrape_output_txt',      !!s.outputTxt);
+        GM_setValue('scrape_output_md',       !!s.outputMd);
+        GM_setValue('scrape_with_correction', !!s.withCorrection);
         loadSettings();
     }
 
@@ -147,6 +150,25 @@
         Array.from(document.querySelectorAll('button')).find(b =>
             /prev|précédent|precedent/i.test(b.textContent || '')
         );
+
+    // The "Answer" / "Réponse" validation button. Mirrored from
+    // +++ userscript.txt:135 — once an answer is clicked it becomes
+    // enabled, and clicking it reveals the four post-correction states
+    // (emerald / amber / red / default).
+    const getCheckBtn = () => {
+        const buttons = [...document.querySelectorAll('button')];
+        const answerBtn = buttons.find(b => {
+            const text = b.textContent?.trim().toLowerCase();
+            const hasAnswerText = text === 'answer' || text === 'réponse';
+            const hasCheckIcon  = b.querySelector('svg.lucide-circle-check-big');
+            return hasAnswerText && hasCheckIcon;
+        });
+        if (answerBtn) return answerBtn;
+        return buttons.find(b => {
+            const text = b.textContent?.trim();
+            return /check\s*answer|submit|verify|show\s*answer|^answer$|^réponse$/i.test(text);
+        });
+    };
 
     // Current Q-number indicator from the DOM:
     //   <div class="text-sm font-black  border-b border-white/10 pb-1.5 …">7</div>
@@ -225,6 +247,76 @@
             }
         }
         return null;
+    }
+
+    // Once correction is revealed, every answer button takes one of four
+    // visual states (per the user's HTML samples):
+    //   - bg-emerald-*  → CORRECT answer that the user selected
+    //   - bg-amber-*    → CORRECT answer the user did NOT select
+    //   - bg-red-*      → WRONG answer the user selected
+    //   - bg-white / bg-zinc-* → unrevealed, OR a wrong unselected answer
+    // The first two are the "correct" set we care about.
+    const ANSWER_STATE_RE      = /\bbg-(emerald|amber|red)-/;
+    const CORRECT_STATE_RE     = /\bbg-(emerald|amber)-/;
+
+    // True iff the page is in a revealed-correction state — i.e. at least
+    // one answer button has a state-specific colour class on it.
+    function isCorrectionRevealed() {
+        return getAnswerButtons().some(b => ANSWER_STATE_RE.test(b.className || ''));
+    }
+
+    // Returns the array of correct letters (e.g. ["A","B","C"]) when the
+    // page is showing the revealed correction. Returns null when nothing
+    // has been revealed yet, and [] when the page is revealed but every
+    // button is white/red (correction not actually exposed for this exam,
+    // e.g. some "Correction collective" cases).
+    function getCorrectAnswers() {
+        if (!isCorrectionRevealed()) return null;
+        const correct = [];
+        getAnswerButtons().forEach((b, i) => {
+            const cls = b.className || '';
+            if (!CORRECT_STATE_RE.test(cls)) return;
+            const labelEl = b.querySelector('span.font-black');
+            const letter  = labelEl?.textContent?.trim() || LABELS[i] || String(i + 1);
+            if (LABELS.includes(letter)) correct.push(letter);
+        });
+        return correct;
+    }
+
+    // Trigger the revealed-correction state on the current question.
+    //   1. Click any answer button (any letter — we just need to enable
+    //      the validate/Answer button).
+    //   2. Wait for the validate button to come back enabled.
+    //   3. Click it.
+    //   4. Wait for at least one answer button to flip into a coloured
+    //      state.
+    // Returns true on success, false if any step times out.
+    //
+    // SIDE EFFECT: this leaves a real answer recorded against the user's
+    // account on e-qe.online. The settings panel warns about this.
+    async function revealCorrection() {
+        if (isCorrectionRevealed()) return true;
+        const btns = getAnswerButtons();
+        if (btns.length === 0) return false;
+
+        // Click answer A (the first one). Any letter works — clicking
+        // "wrong" still reveals all correct answers via the amber state.
+        btns[0].click();
+
+        // Wait for the validate button to pop in / unlock.
+        const check = await waitFor(() => {
+            const b = getCheckBtn();
+            if (!b) return null;
+            const disabled = b.disabled || b.getAttribute('aria-disabled') === 'true';
+            return disabled ? null : b;
+        }, 4000);
+        if (!check) return false;
+
+        check.click();
+
+        // Wait for the page to actually flip into the revealed state.
+        const ok = await waitFor(isCorrectionRevealed, 4000);
+        return !!ok;
     }
 
     // Correction-type badge shown above the question:
@@ -410,9 +502,10 @@
         return {
             text,
             props,
-            qn:         getCurrentQuestionNumber(),
-            tag:        getQuestionTag(),
-            correction: getCorrectionType(),
+            qn:             getCurrentQuestionNumber(),
+            tag:            getQuestionTag(),
+            correction:     getCorrectionType(),
+            correctAnswers: getCorrectAnswers(),
         };
     }
 
@@ -617,6 +710,21 @@
         return lines;
     }
 
+    // Render the per-question correction line, e.g.:
+    //   "Correction officielle - normal 2026 Q25 - Infections cutanées = A,B,C"
+    // The badge text comes from the exam block (locked once we see it).
+    // When detection hasn't returned a result yet (current state until we
+    // wire up getCorrectAnswers), prints "= [pending]" so the line is
+    // visible in the file but obviously incomplete.
+    function buildCorrectionLine(examTitle, q, num, block) {
+        const badge = block.correction || 'Correction';
+        const tag   = q.tag ? ` - ${q.tag}` : '';
+        const ans   = Array.isArray(q.correctAnswers) && q.correctAnswers.length
+            ? q.correctAnswers.join(',')
+            : '[pending]';
+        return `${badge} - ${examTitle} Q${num}${tag} = ${ans}`;
+    }
+
     // Sort captured questions by their real qn from the page indicator.
     // Questions without a qn (rare — happens only if the indicator was
     // missing on every read) are appended at the end in capture order.
@@ -627,7 +735,8 @@
         return tagged.concat(untagged);
     }
 
-    function buildMarkdown(job) {
+    function buildMarkdown(job, settings = loadSettings()) {
+        const withCorr = !!settings.withCorrection;
         const lines = [];
         lines.push(`# ${job.module}`);
         lines.push('');
@@ -652,13 +761,18 @@
                     lines.push(p);
                     lines.push('');
                 });
+                if (withCorr) {
+                    lines.push(buildCorrectionLine(examTitle, q, num, block));
+                    lines.push('');
+                }
                 lines.push('');
             });
         }
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
     }
 
-    function buildPlainText(job) {
+    function buildPlainText(job, settings = loadSettings()) {
+        const withCorr = !!settings.withCorrection;
         // .txt mirrors the .md content but without markdown markers, matching
         // the user's spec "like in original page".
         const lines = [];
@@ -682,6 +796,10 @@
                 lines.push('');
                 q.props.forEach(p => lines.push(p));
                 lines.push('');
+                if (withCorr) {
+                    lines.push(buildCorrectionLine(examTitle, q, num, block));
+                    lines.push('');
+                }
             });
         }
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
@@ -692,17 +810,17 @@
         const s = loadSettings();
         let wrote = 0;
         if (s.outputTxt) {
-            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+            downloadBlob(`${base}.txt`, buildPlainText(job, s), 'text/plain;charset=utf-8');
             wrote++;
         }
         if (s.outputMd) {
-            downloadBlob(`${base}.md`,  buildMarkdown(job),  'text/markdown;charset=utf-8');
+            downloadBlob(`${base}.md`,  buildMarkdown(job, s),  'text/markdown;charset=utf-8');
             wrote++;
         }
         // Defensive: if the user disabled everything, still write the txt
         // so they don't end a 30-minute scrape with zero output.
         if (wrote === 0) {
-            downloadBlob(`${base}.txt`, buildPlainText(job), 'text/plain;charset=utf-8');
+            downloadBlob(`${base}.txt`, buildPlainText(job, s), 'text/plain;charset=utf-8');
         }
     }
 
@@ -845,7 +963,7 @@
             </div>
 
             <div style="font-weight:600;margin-bottom:6px;">Output files</div>
-            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:18px;">
+            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;">
                 <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
                     <input type="checkbox" id="eqe-set-txt" ${s.outputTxt ? 'checked' : ''}>
                     <span><b>.txt</b> — plain text (recommended)</span>
@@ -853,6 +971,18 @@
                 <label style="display:flex;gap:10px;align-items:center;cursor:pointer;">
                     <input type="checkbox" id="eqe-set-md" ${s.outputMd ? 'checked' : ''}>
                     <span><b>.md</b> — Markdown with #/##/### headings</span>
+                </label>
+            </div>
+
+            <div style="font-weight:600;margin-bottom:6px;">Correction</div>
+            <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:18px;">
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${!s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
+                    <input type="radio" name="eqe-corr" id="eqe-corr-off" value="off" ${!s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">Scrape without correction</div><div style="opacity:0.6;font-size:11px;">Just the question and propositions A–E (default).</div></div>
+                </label>
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.withCorrection ? 'rgba(16,185,129,0.12)' : 'transparent'};">
+                    <input type="radio" name="eqe-corr" id="eqe-corr-on" value="on" ${s.withCorrection ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">Scrape with correction</div><div style="opacity:0.6;font-size:11px;">Adds a correction line after each question (e.g. "= A,B,C"). <b>Side effect:</b> the scraper clicks an answer per question to reveal the correction, so your progress on the site will be marked.</div></div>
                 </label>
             </div>
 
@@ -877,6 +1007,16 @@
             });
         });
 
+        // Repaint the correction radios on selection.
+        panel.querySelectorAll('input[name="eqe-corr"]').forEach(r => {
+            r.addEventListener('change', () => {
+                panel.querySelectorAll('input[name="eqe-corr"]').forEach(input => {
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.style.background = input.checked ? 'rgba(16,185,129,0.12)' : 'transparent';
+                });
+            });
+        });
+
         panel.querySelector('#eqe-set-x').onclick      = closeSettingsPanel;
         panel.querySelector('#eqe-set-cancel').onclick = closeSettingsPanel;
         panel.querySelector('#eqe-set-save').onclick   = () => {
@@ -888,7 +1028,8 @@
             };
             const outputTxt = panel.querySelector('#eqe-set-txt').checked;
             const outputMd  = panel.querySelector('#eqe-set-md').checked;
-            saveSettings({ speed, custom, outputTxt, outputMd });
+            const withCorrection = panel.querySelector('#eqe-corr-on').checked;
+            saveSettings({ speed, custom, outputTxt, outputMd, withCorrection });
             showToast('Settings saved.', 'success');
             closeSettingsPanel();
         };
@@ -955,7 +1096,7 @@
         if (!job || !job.active) return;
 
         // Apply the user's saved scrape-speed before any pauses fire.
-        loadSettings();
+        const settings = loadSettings();
 
         // Make sure we're on the exam this job expects. If the user clicked
         // away, just abort silently — the start button on the course page
@@ -1009,12 +1150,24 @@
             // Skip if we've already captured this exact text (defends against
             // a duplicate fire from a re-render after a successful capture).
             if (!seenTexts.has(q.text)) {
+                // If the user opted into "scrape with correction", trigger
+                // the reveal *now* (before pushing) so we capture the
+                // correct-answer letters alongside text/props. Reveal does
+                // a real click on the page, so it side-effects the user's
+                // recorded answer for this question.
+                let correctAnswers = q.correctAnswers;
+                if (settings.withCorrection && !correctAnswers) {
+                    const ok = await revealCorrection();
+                    if (ok) correctAnswers = getCorrectAnswers();
+                }
+
                 captured.push({
-                    qn:         q.qn ?? null,
-                    text:       q.text,
-                    props:      q.props,
-                    tag:        q.tag ?? null,
-                    correction: q.correction ?? null,
+                    qn:             q.qn ?? null,
+                    text:           q.text,
+                    props:          q.props,
+                    tag:            q.tag ?? null,
+                    correction:     q.correction ?? null,
+                    correctAnswers: correctAnswers ?? null,
                 });
                 seenTexts.add(q.text);
                 // Lock the exam-wide correction once we've seen one. The
@@ -1071,12 +1224,21 @@
                     if (seenTexts.has(got.text)) continue;
                     if (indexByQn(captured)[realQn]) continue;
 
+                    // Reveal correction if the user asked for it, same as
+                    // pass 1.
+                    let correctAnswers = got.correctAnswers;
+                    if (settings.withCorrection && !correctAnswers) {
+                        const ok = await revealCorrection();
+                        if (ok) correctAnswers = getCorrectAnswers();
+                    }
+
                     captured.push({
-                        qn:         realQn,
-                        text:       got.text,
-                        props:      got.props,
-                        tag:        got.tag ?? null,
-                        correction: got.correction ?? null,
+                        qn:             realQn,
+                        text:           got.text,
+                        props:          got.props,
+                        tag:            got.tag ?? null,
+                        correction:     got.correction ?? null,
+                        correctAnswers: correctAnswers ?? null,
                     });
                     seenTexts.add(got.text);
                     if (!job.data[examTitle].correction && got.correction) {

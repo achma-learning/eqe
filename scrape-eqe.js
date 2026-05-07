@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.6.2
+// @version      0.6.3
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -847,8 +847,11 @@
 
     function buildPlainText(job, settings = loadSettings()) {
         const withCorr = !!settings.withCorrection;
-        // .txt mirrors the .md content but without markdown markers, matching
-        // the user's spec "like in original page".
+        // Visual decorations applied to the .txt output (.md keeps real
+        // Markdown headings, those don't need extra glyphs):
+        //   //  before every exam-URL line (e.g. "// Ratt 2025 (...)")
+        //   #   before every question heading ("# Ratt 2025 Q1 - <tag>")
+        //   N.  before every question prompt ("1. <text>")
         const lines = [];
         lines.push(job.module);
         lines.push('');
@@ -859,14 +862,14 @@
             lines.push('---');
             lines.push('');
             const corr = block.correction ? ` (${block.correction})` : '';
-            lines.push(`${examTitle}${corr} : ${block.url}`);
+            lines.push(`// ${examTitle}${corr} : ${block.url}`);
             lines.push('');
             sortByQn(block.questions).forEach((q, idx) => {
                 const num = q.qn ?? (idx + 1);
                 const suffix = q.tag ? ` - ${q.tag}` : '';
-                lines.push(`${examTitle} Q${num}${suffix}`);
+                lines.push(`# ${examTitle} Q${num}${suffix}`);
                 lines.push('');
-                lines.push(q.text);
+                lines.push(`${num}. ${q.text}`);
                 lines.push('');
                 q.props.forEach(p => lines.push(p));
                 lines.push('');

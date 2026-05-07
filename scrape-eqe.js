@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.7.1
+// @version      0.7.2
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -794,7 +794,10 @@
                     lines.push(`${title} = ${captured}/${expected} ${word} (${expected - captured} missing)`);
                 }
             } else {
-                lines.push(`${title} = ${captured} ${word}`);
+                // Always show the "captured/total" ratio, even on a
+                // perfect run, so the user can sanity-check the total
+                // count read from the page indicator at a glance.
+                lines.push(`${title} = ${captured}/${expected} ${word}`);
             }
         });
 

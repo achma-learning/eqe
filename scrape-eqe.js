@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -882,9 +882,32 @@
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
     }
 
+    // Each module gets its own pair of files (.txt / .md), one pair per
+    // module per batch. exportFiles is invoked from advanceToNextExam
+    // BEFORE advanceToNextModule resets job.data, so the contents of any
+    // single download only ever cover the current module. (Verified at
+    // scrape-eqe.js:1553 export → 1589 reset.)
+    //
+    // Collision guard: if two modules in the same batch happen to
+    // sanitise to the same base name (rare — only if display names are
+    // identical), suffix the second with the short course UUID so the
+    // browser doesn't silently overwrite the first download. The set of
+    // used names lives on the job so it survives the per-module data
+    // reset.
     function exportFiles(job) {
-        const base = sanitizeFilename(job.module);
         const s = loadSettings();
+        const used = new Set(job.usedFilenames || []);
+        let base = sanitizeFilename(job.module || 'module');
+
+        if (used.has(base.toLowerCase())) {
+            const id = job.modules?.[job.currentModuleIndex]?.id || '';
+            const shortId = (id || '').slice(0, 8);
+            if (shortId) base = `${base}-${shortId}`;
+        }
+        used.add(base.toLowerCase());
+        job.usedFilenames = Array.from(used);
+        saveJob(job);
+
         let wrote = 0;
         if (s.outputTxt) {
             downloadBlob(`${base}.txt`, buildPlainText(job, s), 'text/plain;charset=utf-8');
@@ -1552,7 +1575,16 @@
             try {
                 exportFiles(job);
                 const moduleLabel = job.module || 'module';
-                showToast(`✅ ${moduleLabel}: ${Object.keys(job.data).length} exam(s) saved.`, 'success');
+                const examCount   = Object.keys(job.data).length;
+                const settings    = loadSettings();
+                const exts        = [];
+                if (settings.outputTxt) exts.push('.txt');
+                if (settings.outputMd)  exts.push('.md');
+                if (exts.length === 0)  exts.push('.txt');
+                showToast(
+                    `✅ ${moduleLabel}: ${examCount} exam(s) saved → ${exts.join(' / ')}`,
+                    'success'
+                );
             } catch (e) {
                 showToast(`Export failed: ${e.message}`, 'error');
             }

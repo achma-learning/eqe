@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.5.2
+// @version      0.5.3
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -317,6 +317,14 @@
         // Wait for the page to actually flip into the revealed state.
         const ok = await waitFor(isCorrectionRevealed, 4000);
         return !!ok;
+    }
+
+    // True if this exam's correction badge is the "Correction collective"
+    // variant — i.e. the site does NOT expose official answers, so there's
+    // no point clicking through to reveal anything. We skip revealCorrection()
+    // and omit the correction line entirely on these exams.
+    function isCollectiveCorrection(badge) {
+        return !!badge && /collective/i.test(badge);
     }
 
     // Correction-type badge shown above the question:
@@ -713,16 +721,21 @@
     // Render the per-question correction line, e.g.:
     //   "Correction officielle - normal 2026 Q25 - Infections cutanées = A,B,C"
     // The badge text comes from the exam block (locked once we see it).
-    // When detection hasn't returned a result yet (current state until we
-    // wire up getCorrectAnswers), prints "= [pending]" so the line is
-    // visible in the file but obviously incomplete.
+    // Returns null when the line should be omitted entirely:
+    //   - badge is "Correction collective" (site doesn't expose answers)
+    //   - no badge AND no captured answers
+    // Returns "= [pending]" when the badge IS official but reveal failed,
+    // so missing data is still visible in the file.
     function buildCorrectionLine(examTitle, q, num, block) {
-        const badge = block.correction || 'Correction';
-        const tag   = q.tag ? ` - ${q.tag}` : '';
-        const ans   = Array.isArray(q.correctAnswers) && q.correctAnswers.length
-            ? q.correctAnswers.join(',')
-            : '[pending]';
-        return `${badge} - ${examTitle} Q${num}${tag} = ${ans}`;
+        const badge = block.correction || q.correction || null;
+        if (isCollectiveCorrection(badge)) return null;
+
+        const hasAnswers = Array.isArray(q.correctAnswers) && q.correctAnswers.length;
+        if (!badge && !hasAnswers) return null;
+
+        const tag = q.tag ? ` - ${q.tag}` : '';
+        const ans = hasAnswers ? q.correctAnswers.join(',') : '[pending]';
+        return `${badge || 'Correction'} - ${examTitle} Q${num}${tag} = ${ans}`;
     }
 
     // Sort captured questions by their real qn from the page indicator.
@@ -762,8 +775,11 @@
                     lines.push('');
                 });
                 if (withCorr) {
-                    lines.push(buildCorrectionLine(examTitle, q, num, block));
-                    lines.push('');
+                    const corrLine = buildCorrectionLine(examTitle, q, num, block);
+                    if (corrLine) {
+                        lines.push(corrLine);
+                        lines.push('');
+                    }
                 }
                 lines.push('');
             });
@@ -797,8 +813,11 @@
                 q.props.forEach(p => lines.push(p));
                 lines.push('');
                 if (withCorr) {
-                    lines.push(buildCorrectionLine(examTitle, q, num, block));
-                    lines.push('');
+                    const corrLine = buildCorrectionLine(examTitle, q, num, block);
+                    if (corrLine) {
+                        lines.push(corrLine);
+                        lines.push('');
+                    }
                 }
             });
         }
@@ -1154,9 +1173,14 @@
                 // the reveal *now* (before pushing) so we capture the
                 // correct-answer letters alongside text/props. Reveal does
                 // a real click on the page, so it side-effects the user's
-                // recorded answer for this question.
+                // recorded answer for this question. Skip entirely on
+                // exams whose badge is "Correction collective" — those
+                // don't expose answers.
                 let correctAnswers = q.correctAnswers;
-                if (settings.withCorrection && !correctAnswers) {
+                const corrBadge = q.correction || job.data[examTitle].correction;
+                if (settings.withCorrection
+                    && !correctAnswers
+                    && !isCollectiveCorrection(corrBadge)) {
                     const ok = await revealCorrection();
                     if (ok) correctAnswers = getCorrectAnswers();
                 }
@@ -1225,9 +1249,13 @@
                     if (indexByQn(captured)[realQn]) continue;
 
                     // Reveal correction if the user asked for it, same as
-                    // pass 1.
+                    // pass 1 — but skip on "Correction collective" exams,
+                    // which don't expose answers.
                     let correctAnswers = got.correctAnswers;
-                    if (settings.withCorrection && !correctAnswers) {
+                    const corrBadge = got.correction || job.data[examTitle].correction;
+                    if (settings.withCorrection
+                        && !correctAnswers
+                        && !isCollectiveCorrection(corrBadge)) {
                         const ok = await revealCorrection();
                         if (ok) correctAnswers = getCorrectAnswers();
                     }

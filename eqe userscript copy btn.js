@@ -266,7 +266,7 @@
 
         let prompt = `Rôle : Agis en tant que Professeur agrégé de médecine et expert en pédagogie médicale. Ton objectif est de corriger ce QCM de niveau ECNi/EDN/DES avec une rigueur scientifique absolue et une mise en page ultra-lisible.\n\n`;
 
-        prompt += `### Contexte\n* Module : ${moduleName}\n* Examen : ${examTitle}\n\n`;
+        prompt += `### Contexte\n* Module : ${moduleName}\n\n`;
         prompt += `### Données d'entrée\n**Question :**\n${question}\n\n`;
         prompt += `**Options :**\n${options}\n\n`;
 
@@ -287,8 +287,8 @@
         prompt += `3. **Synthèse Clinique (Mots-clés) :** Isole sous forme de puces (bullet points) le faisceau d'arguments de la vignette qui mène à ce diagnostic.\n`;
         prompt += `4. **Physiopathologie & Justification :** Explique précisément pourquoi la réponse choisie est la bonne (mécanisme, anapath, etc.).\n`;
         prompt += `5. **Analyse inversée des Distracteurs :** Pour chaque proposition fausse, explique brièvement pourquoi elle est éliminée **ET** précise à quelle autre pathologie elle fait référence (ex: "Faux, c'est le mécanisme de la maladie de X").\n`;
-        prompt += `6. **La Perle du Professeur 💎 :** Un point de vigilance, un piège classique de l'examen, ou la dernière recommandation (HAS/Collèges) sur ce sujet.`;
-      prompt += `Ton : Académique, précis, factuel et structuré.`;
+        prompt += `6. **La Perle du Professeur 💎 :** Un point de vigilance, un piège classique de l'examen, ou la dernière recommandation (HAS/Collèges) sur ce sujet.\n`;
+        prompt += `Ton : Académique, précis, factuel et structuré.`;
 
         return prompt;
     }

@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         UPDATE eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
+// @name         update eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.30
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy • Shift+V AI menu • S stats • 📋 copy full prompt + official correction (optional) • Alt+C shortcut • Enhanced extraction from scraper
+// @version      8.27
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy • Shift+V AI menu • S stats • NEW: 📋 copy full prompt + official correction (optional) • Alt+Shift+C shortcut
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -111,7 +111,7 @@
     };
 
     // ============================================================================
-    // DOM SELECTORS (enhanced from scraper)
+    // DOM SELECTORS
     // ============================================================================
 
     const getNextBtn = () =>
@@ -171,13 +171,11 @@
         });
     };
 
-    // ---------- Correction detection (borrowed from scraper) ----------
-    const ANSWER_STATE_RE  = /\bbg-(emerald|amber|red)-/;
-    const CORRECT_STATE_RE = /\bbg-(emerald|amber)-/;
-
+    // ---------- correction detection (borrowed from userscript 1) ----------
     function isCorrectionRevealed() {
         const btns = getAnswerButtons();
         if (btns.length === 0) return false;
+        const ANSWER_STATE_RE = /\bbg-(emerald|amber|red)-/;
         return btns.some(b => ANSWER_STATE_RE.test(b.className || ''));
     }
 
@@ -187,6 +185,7 @@
         const correct = [];
         getAnswerButtons().forEach((b, i) => {
             const cls = b.className || '';
+            const CORRECT_STATE_RE = /\bbg-(emerald|amber)-/;
             if (!CORRECT_STATE_RE.test(cls)) return;
             const labelEl = b.querySelector('span.font-black');
             const letter  = labelEl?.textContent?.trim() || LABELS[i] || String(i + 1);
@@ -194,73 +193,31 @@
         });
         return correct;
     }
-
-    function isCollectiveCorrection() {
-        const badge = getCorrectionType();
-        return badge ? /collective/i.test(badge) : false;
-    }
-
-    function getCorrectionType() {
-        const direct = document.querySelectorAll('span.inline-flex.rounded-md');
-        for (const el of direct) {
-            if (el.children.length > 0) continue;
-            const txt = el.textContent?.trim();
-            if (txt && /^correction\b/i.test(txt) && txt.length < 60) return txt;
-        }
-        const fallback = document.querySelectorAll('span.inline-flex');
-        for (const el of fallback) {
-            const txt = el.textContent?.trim();
-            if (txt && /^correction\b/i.test(txt) && txt.length < 60) return txt;
-        }
-        return null;
-    }
     // --------------------------------------------------------------
 
-    // Enhanced question text extraction (filter placeholders)
-    const PLACEHOLDER_TEXTS = [
-        /^loading\.*$/i, /^chargement\.*$/i, /^\.{2,}$/, /^…$/, /^…\.*$/, /^skeleton$/i
-    ];
-    function isPlaceholderText(t) {
-        if (!t) return true;
-        const trimmed = t.trim();
-        if (trimmed.length < 5) return true;
-        return PLACEHOLDER_TEXTS.some(re => re.test(trimmed));
-    }
-
     const getQuestionText = () => {
-        const el = document.querySelector('h2.text-base.font-semibold') ||
-                   document.querySelector('h2.font-semibold') ||
-                   document.querySelector('h2');
+        const el = document.querySelector('h1, h2, [class*="question"]');
         if (!el) return null;
         const text = el.textContent.trim();
-        if (isPlaceholderText(text)) return null;
+        if (text.length < 5) return null;
         return text;
     };
 
-    // ---------- Module & Exam name extraction (enhanced from scraper) ----------
-    const NAV_PREFIX_RE = /^(key=\d+|press=\[\d+\])\s+/;
-
-    function getCourseModuleName() {
-        const curId = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
-        if (curId) {
-            try {
-                const saved = GM_getValue('saved_courses', []);
-                const hit = Array.isArray(saved) ? saved.find(c => c?.id === curId) : null;
-                if (hit?.name) return hit.name.replace(NAV_PREFIX_RE, '').trim();
-            } catch { /* ignore */ }
+    // ---------- module name extraction (IMPROVED) ----------
+    function getCurrentModuleName() {
+        const breadcrumbLink = document.querySelector('a[data-slot="breadcrumb-link"][href*="/dashboard/course/"]');
+        if (breadcrumbLink) {
+            const txt = breadcrumbLink.textContent?.trim();
+            if (txt && txt.length > 0) return txt;
         }
-        const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
-        for (const link of courseLinks) {
-            const id = link.href.split('/').pop().split('?')[0].split('#')[0];
-            if (curId && id !== curId) continue;
-            const nameEl = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
-            if (!nameEl) continue;
-            const name = nameEl.innerText.trim().replace(NAV_PREFIX_RE, '').trim();
-            if (name && !/^unknown/i.test(name)) return name;
+        const lessonLink = document.querySelector('a[href*="/lesson/"]');
+        if (lessonLink) {
+            const txt = lessonLink.textContent?.trim();
+            if (txt && txt.length > 0 && txt.length < 80) return txt;
         }
         const h1 = document.querySelector('h1');
-        const h1txt = h1?.textContent?.trim().replace(NAV_PREFIX_RE, '').trim();
-        if (h1txt) return h1txt;
+        const h1txt = h1?.textContent?.trim();
+        if (h1txt && h1txt.length > 0) return h1txt;
         const title = document.title.replace(/\s*\|.*$/, '').trim();
         return title || 'Unknown Module';
     }
@@ -274,61 +231,53 @@
         const breadcrumbExam = document.querySelector('a[href*="/exam/"]:not([href*="/dashboard/"])');
         const bcTxt = breadcrumbExam?.textContent?.trim();
         if (bcTxt && bcTxt.length > 0 && bcTxt.length < 80) return bcTxt;
-        const qHeading = document.querySelector('h1, h2, h3');
-        if (qHeading) {
-            const m = qHeading.textContent.trim().match(/^(.+?)\s+Q\s*\d+\s*$/i);
-            if (m && m[1]) return m[1].trim();
-        }
         return 'Exam';
     }
     // --------------------------------------------------------------
 
     // ============================================================================
-    // COPY FULL PROMPT (French medical professor template)
+    // COPY FULL PROMPT (IMPROVED)
+    // ============================================================================
+
+// ============================================================================
+    // COPY FULL PROMPT (IMPROVED MEDICAL ECNi/DES VERSION)
     // ============================================================================
 
     function buildFullPrompt(includeCorrection) {
-        const moduleName = getCourseModuleName() || 'Module inconnu';
-        const examTitle  = getCurrentExamTitle() || 'Examen inconnu';
-        const question   = getQuestionText();
-        if (!question) return null;
+        const moduleName = getCurrentModuleName() || 'Unknown Module';
+        const examTitle  = getCurrentExamTitle() || 'Unknown Exam';
+        const questionEl = document.querySelector('h1, h2, [class*="question"]');
+        if (!questionEl) return null;
 
+        const question = questionEl.textContent.trim();
         const btns = getAnswerButtons();
         if (btns.length === 0) return null;
 
         const labels = ['A', 'B', 'C', 'D', 'E'];
         const options = btns.map((btn, i) => {
-            const textEl = btn.querySelector('span.flex-1');
-            let propText = textEl?.textContent?.trim();
-            if (!propText) {
-                const parts = [];
-                btn.querySelectorAll('p, span').forEach(el => {
-                    const t = el.textContent.trim();
-                    if (t && !labels.includes(t) && t.length > 1) parts.push(t);
-                });
-                propText = parts.join(' ').trim() || btn.textContent.replace(/^[A-E]\s*/, '').trim();
-            }
+            const texts = [];
+            btn.querySelectorAll('p, span').forEach(el => {
+                const t = el.textContent.trim();
+                if (t && !labels.includes(t) && t.length > 1) texts.push(t);
+            });
+            const propText = texts.join(' ').trim() || btn.textContent.replace(/^[A-E]\s*/, '').trim();
             return `${labels[i] || (i+1)}. ${propText}`;
         }).join('\n');
 
         let prompt = `Rôle : Agis en tant que Professeur agrégé de médecine et expert en pédagogie médicale. Ton objectif est de corriger ce QCM de niveau ECNi/EDN/DES avec une rigueur scientifique absolue et une mise en page ultra-lisible.\n\n`;
+
         prompt += `### Contexte\n* Module : ${moduleName}\n* Examen : ${examTitle}\n\n`;
         prompt += `### Données d'entrée\n**Question :**\n${question}\n\n`;
         prompt += `**Options :**\n${options}\n\n`;
 
         if (includeCorrection) {
-            const isCollective = isCollectiveCorrection();
-            if (isCollective) {
-                prompt += `**Correction officielle :** (Correction collective – les réponses exactes ne sont pas fournies individuellement par le site. Veuillez déterminer la réponse correcte par analyse.)\n\n`;
+            const correct = getCorrectAnswers();
+            if (correct && correct.length > 0) {
+                prompt += `**Correction officielle :** ${correct.join(', ')}\n\n`;
+            } else if (isCorrectionRevealed()) {
+                prompt += `**Correction officielle :** [Non extraite, merci de déterminer la bonne réponse]\n\n`;
             } else {
-                const correct = getCorrectAnswers();
-                if (correct && correct.length > 0) {
-                    prompt += `**Correction officielle :** ${correct.join(', ')}\n\n`;
-                } else if (isCorrectionRevealed()) {
-                    prompt += `**Correction officielle :** [Non extraite automatiquement – merci de déterminer la bonne réponse]\n\n`;
-                } else {
-                    prompt += `**Correction officielle :** (Non révélée – répondez d'abord à la question pour la voir apparaître)\n\n`;
-                }
+                prompt += `**Correction officielle :** (Non révélée, merci de résoudre le cas et de donner la réponse exacte)\n\n`;
             }
         }
 
@@ -339,18 +288,23 @@
         prompt += `4. **Physiopathologie & Justification :** Explique précisément pourquoi la réponse choisie est la bonne (mécanisme, anapath, etc.).\n`;
         prompt += `5. **Analyse inversée des Distracteurs :** Pour chaque proposition fausse, explique brièvement pourquoi elle est éliminée **ET** précise à quelle autre pathologie elle fait référence (ex: "Faux, c'est le mécanisme de la maladie de X").\n`;
         prompt += `6. **La Perle du Professeur 💎 :** Un point de vigilance, un piège classique de l'examen, ou la dernière recommandation (HAS/Collèges) sur ce sujet.`;
+      prompt += `Ton : Académique, précis, factuel et structuré.`;
 
         return prompt;
     }
-
     function copyFullPrompt() {
         const prompt = buildFullPrompt(config.includeCorrection);
         if (!prompt) {
-            showToast('❌ Impossible d’extraire les données de la question', 'warning');
+            if (typeof showToast === 'function') {
+                showToast('❌ Could not extract question data', 'warning');
+            } else {
+                console.warn('❌ Could not extract question data');
+            }
             return;
         }
+
         navigator.clipboard.writeText(prompt).then(() => {
-            showToast('📋 Prompt structuré copié dans le presse-papiers !', 'success');
+            if (typeof showToast === 'function') showToast('📋 Structured AI prompt copied to clipboard!', 'success');
         }).catch(() => {
             const ta = document.createElement('textarea');
             ta.value = prompt;
@@ -359,7 +313,7 @@
             ta.select();
             document.execCommand('copy');
             ta.remove();
-            showToast('📋 Prompt structuré copié !', 'success');
+            if (typeof showToast === 'function') showToast('📋 Structured AI prompt copied!', 'success');
         });
     }
 
@@ -499,7 +453,7 @@
                             <td style="padding:12px 8px;font-weight:bold;">${p.emoji} ${p.name}</td>
                             <td style="padding:12px 8px;">${p.q}s / ${p.a}s</td>
                             <td style="padding:12px 8px;font-size:12px;">${p.desc}</td>
-                          </tr>`).join('')}
+                         </tr>`).join('')}
                     </tbody>
                 </table>
             </div>
@@ -518,7 +472,7 @@
     }
 
     // ============================================================================
-    // COURSE SWITCHER & MODULE SCANNING
+    // COURSE SWITCHER
     // ============================================================================
 
     function extractModuleIconSvg(link) {
@@ -615,7 +569,7 @@
                     <thead><tr style="border-bottom:2px solid ${border};text-align:left;">
                         <th style="padding:12px 8px;">#</th>
                         <th style="padding:12px 8px;">Course Name</th>
-                      <table></thead>
+                      </table></thead>
                     <tbody>
                         ${courses.map((c, i) => `
                         <tr class="eqe-course-row" data-url="${c.url}"
@@ -657,7 +611,7 @@
     }
 
     // ============================================================================
-    // COURSE PAGE: COMPACT VIEW & IMAGE TOGGLE, STATS PANEL, etc.
+    // COURSE PAGE: COMPACT VIEW & IMAGE TOGGLE
     // ============================================================================
 
     const COURSE_STYLE_ID = 'eqe-course-compact-style';
@@ -665,13 +619,17 @@
     function buildCourseCSS() {
         const hideImages = config.courseImagesHidden;
         const compact    = config.courseCompact;
+
         let css = '';
+
         if (hideImages) {
             css += `
+/* ── Hide lesson/exam card images ── */
 a[href*="/lesson/"] .relative.w-full[class*="aspect"],
 a[href*="/exam/"]   .relative.w-full[class*="aspect"] {
     display: none !important;
 }
+/* Reposition the EXAM badge (was absolute inside the image wrapper) */
 a[href*="/exam/"] .absolute.top-3.right-3 {
     position : static   !important;
     display  : inline-flex !important;
@@ -679,8 +637,10 @@ a[href*="/exam/"] .absolute.top-3.right-3 {
     margin-bottom: 2px  !important;
 }`;
         }
+
         if (compact) {
             css += `
+/* ── Compact card layout ── */
 a[href*="/lesson/"],
 a[href*="/exam/"] {
     gap        : 6px  !important;
@@ -702,26 +662,31 @@ a[href*="/lesson/"] .mt-auto,
 a[href*="/exam/"]   .mt-auto {
     padding-top: 4px !important;
 }
+/* Denser grid — more columns, smaller gap */
 .grid.grid-cols-1.sm\\:grid-cols-2.md\\:grid-cols-3.xl\\:grid-cols-4 {
     grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)) !important;
     gap: 6px !important;
 }`;
         }
+
         return css;
     }
 
     function applyCourseStyles() {
         const isCoursePage = window.location.href.includes('/dashboard/course/');
         let styleEl = document.getElementById(COURSE_STYLE_ID);
+
         if (!isCoursePage) {
             styleEl?.remove();
             return;
         }
+
         if (!styleEl) {
             styleEl    = document.createElement('style');
             styleEl.id = COURSE_STYLE_ID;
             document.head.appendChild(styleEl);
         }
+
         styleEl.textContent = buildCourseCSS();
         expandAllCollapsibles();
     }
@@ -738,8 +703,10 @@ a[href*="/exam/"]   .mt-auto {
         config.courseImagesHidden = !config.courseImagesHidden;
         GM_setValue('courseImagesHidden', config.courseImagesHidden);
         applyCourseStyles();
+
         const label = config.courseImagesHidden ? '🖼️ Card images hidden' : '🖼️ Card images visible';
         showToast(label, 'info');
+
         const cb = document.getElementById('eqe-course-images-hidden');
         if (cb) cb.checked = config.courseImagesHidden;
     }
@@ -748,11 +715,127 @@ a[href*="/exam/"]   .mt-auto {
         config.courseCompact = !config.courseCompact;
         GM_setValue('courseCompact', config.courseCompact);
         applyCourseStyles();
+
         const label = config.courseCompact ? '🗜️ Compact view ON' : '🗜️ Compact view OFF';
         showToast(label, 'info');
+
         const cb = document.getElementById('eqe-course-compact');
         if (cb) cb.checked = config.courseCompact;
     }
+
+    // ============================================================================
+    // COURSE PAGE: ARROW KEY NAVIGATION
+    // ============================================================================
+
+    const COURSE_FOCUS_STYLE_ID = 'eqe-course-focus-style';
+    let courseFocusIndex = -1;
+
+    function getCourseCards() {
+        return [...document.querySelectorAll('a[href*="/lesson/"], a[href*="/exam/"]')];
+    }
+
+    function focusCourseCard(index) {
+        const cards = getCourseCards();
+        if (cards.length === 0) return;
+
+        if (!document.getElementById(COURSE_FOCUS_STYLE_ID)) {
+            const s = document.createElement('style');
+            s.id = COURSE_FOCUS_STYLE_ID;
+            s.textContent = `
+.eqe-card-focused {
+    outline: 3px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 6px rgba(59,130,246,0.2) !important;
+    transition: outline 0.15s, box-shadow 0.15s !important;
+}`;
+            document.head.appendChild(s);
+        }
+
+        document.querySelectorAll('.eqe-card-focused').forEach(c => c.classList.remove('eqe-card-focused'));
+
+        const newIndex = Math.max(0, Math.min(index, cards.length - 1));
+        if (newIndex !== courseFocusIndex && state.resetConfirmPending) {
+            clearTimeout(state.resetConfirmTimeout);
+            state.resetConfirmPending = false;
+            state.resetConfirmTimeout = null;
+        }
+        courseFocusIndex = newIndex;
+        const card = cards[courseFocusIndex];
+        card.classList.add('eqe-card-focused');
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function handleCoursePageKeys(e) {
+        if (!window.location.href.includes('/dashboard/course/')) return false;
+        const cards = getCourseCards();
+        if (cards.length === 0) return false;
+
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+        if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(key)) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            if (courseFocusIndex < 0) {
+                focusCourseCard(0);
+            } else {
+                const card = cards[0];
+                const grid = card?.parentElement;
+                let cols = 1;
+                if (grid) {
+                    const gridStyle = window.getComputedStyle(grid);
+                    const colTemplate = gridStyle.gridTemplateColumns;
+                    if (colTemplate) cols = colTemplate.split(/\s+/).filter(s => s.length > 0).length;
+                }
+                let delta = 0;
+                if (key === 'ArrowRight') delta = 1;
+                else if (key === 'ArrowLeft') delta = -1;
+                else if (key === 'ArrowDown') delta = cols;
+                else if (key === 'ArrowUp') delta = -cols;
+                focusCourseCard(courseFocusIndex + delta);
+            }
+            return true;
+        }
+
+        if ((key === 'Enter' || key === ' ') && courseFocusIndex >= 0) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            const card = cards[courseFocusIndex];
+            if (card?.href) window.location.href = card.href;
+            return true;
+        }
+
+        if (key === 'r' && courseFocusIndex >= 0) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            const card = cards[courseFocusIndex];
+            const resetBtn = [...(card?.querySelectorAll('button') || [])].find(b =>
+                b.querySelector('svg.lucide-rotate-ccw') ||
+                /^\s*reset\s*$|réinitialiser/i.test(b.textContent || '')
+            );
+            if (!resetBtn) {
+                showToast('No reset button on this card', 'warning');
+                return true;
+            }
+            if (state.resetConfirmPending) {
+                clearTimeout(state.resetConfirmTimeout);
+                state.resetConfirmPending = false;
+                state.resetConfirmTimeout = null;
+                resetBtn.click();
+                showToast('🔄 Lesson progress reset', 'success');
+            } else {
+                state.resetConfirmPending = true;
+                showToast('⚠️ Press R again to reset this lesson\'s progress', 'warning');
+                state.resetConfirmTimeout = registerTimeout(setTimeout(() => {
+                    state.resetConfirmPending = false;
+                    state.resetConfirmTimeout = null;
+                }, 3000));
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // ============================================================================
+    // COURSE PAGE: HIDE STATS PANEL
+    // ============================================================================
 
     function getStatsPanel() {
         const candidates = document.querySelectorAll('div.mt-4 > div.relative.rounded-2xl.border.shadow-sm.bg-card');
@@ -769,7 +852,11 @@ a[href*="/exam/"]   .mt-auto {
         if (!window.location.href.includes('/dashboard/course/')) return;
         const panel = getStatsPanel();
         if (!panel) return;
-        panel.style.display = config.statsPanelHidden ? 'none' : '';
+        if (config.statsPanelHidden) {
+            panel.style.display = 'none';
+        } else {
+            panel.style.display = '';
+        }
     }
 
     function toggleStatsPanel() {
@@ -788,10 +875,13 @@ a[href*="/exam/"]   .mt-auto {
     function injectStatsToggleButton() {
         if (!window.location.href.includes('/dashboard/course/')) return;
         if (document.getElementById('eqe-toggle-stats')) return;
+
         const buttonGroup = document.querySelector('div.flex.items-center.gap-4');
         if (!buttonGroup) return;
+
         const themeButton = buttonGroup.querySelector('button[data-slot="dropdown-menu-trigger"]');
         if (!themeButton) return;
+
         const statsBtn = document.createElement('button');
         statsBtn.id = 'eqe-toggle-stats';
         statsBtn.textContent = '📊';
@@ -809,14 +899,20 @@ a[href*="/exam/"]   .mt-auto {
             e.stopPropagation();
             toggleStatsPanel();
         });
+
         buttonGroup.insertBefore(statsBtn, themeButton);
     }
+
+    // ============================================================================
+    // HEADER SIDEBAR TOGGLE BUTTON (course page)
+    // ============================================================================
 
     function injectHeaderSidebarToggle() {
         if (!isOnCoursePage()) return;
         if (document.getElementById('eqe-header-sidebar-toggle')) return;
         const buttonGroup = document.querySelector('div.flex.items-center.gap-4');
         if (!buttonGroup) return;
+
         const btn = document.createElement('button');
         btn.id    = 'eqe-header-sidebar-toggle';
         btn.className = 'bg-gradient-to-r from-[#1068B9] to-[#11509F] h-9 w-9 flex items-center justify-center text-white rounded-md shadow-xs transition-all hover:opacity-90 hover:scale-105 active:scale-95';
@@ -830,6 +926,10 @@ a[href*="/exam/"]   .mt-auto {
         });
         buttonGroup.insertBefore(btn, buttonGroup.firstChild);
     }
+
+    // ============================================================================
+    // MODULE QUICK-NAV BUTTONS IN TOP TASKBAR
+    // ============================================================================
 
     const DASHBOARD_NAV_ICON =
         '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>';
@@ -860,18 +960,24 @@ a[href*="/exam/"]   .mt-auto {
         if (container.dataset.sig === sig) return;
         container.dataset.sig = sig;
         container.innerHTML = '';
+
         items.forEach(it => {
             const b = document.createElement('button');
             b.className = 'eqe-module-nav-btn';
             b.title     = it.title;
             b.dataset.url = it.url;
             b.style.cssText = [
-                'position:relative', 'width:36px','height:36px',
+                'position:relative',
+                'width:36px','height:36px',
                 'display:inline-flex','align-items:center','justify-content:center',
-                'border-radius:8px', 'background:transparent',
+                'border-radius:8px',
+                'background:transparent',
                 'border:1px solid rgba(128,128,128,0.25)',
-                'cursor:pointer', 'transition:all 0.15s', 'color:inherit',
-                'padding:0', 'flex-shrink:0'
+                'cursor:pointer',
+                'transition:all 0.15s',
+                'color:inherit',
+                'padding:0',
+                'flex-shrink:0'
             ].join(';');
             b.innerHTML =
                 `<span class="eqe-mn-icon" style="display:flex;align-items:center;justify-content:center;width:22px;height:22px;line-height:1;color:inherit;">${it.icon}</span>` +
@@ -905,6 +1011,7 @@ a[href*="/exam/"]   .mt-auto {
         if (!buttonGroup) return;
         const header = buttonGroup.parentElement;
         if (!header) return;
+
         let container = document.getElementById('eqe-module-nav-container');
         if (!container) {
             container = document.createElement('div');
@@ -912,11 +1019,12 @@ a[href*="/exam/"]   .mt-auto {
             container.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;margin-right:8px;';
             header.insertBefore(container, buttonGroup);
         }
+
         renderModuleNavButtons(container, buildModuleNavItems());
     }
 
     // ============================================================================
-    // SHORTCUTS HELP OVERLAY
+    // SHORTCUTS HELP OVERLAY (updated)
     // ============================================================================
 
     function showShortcutsHelp() {
@@ -962,7 +1070,7 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
                     <li>${kbd('V')} : Copy Question Prompt</li>
-                    <li><strong>📋 Button</strong> or <strong>Alt+C</strong> : Copy Full Prompt + Official Correction (if enabled)</li>
+                  <li><strong>📋 Button</strong> or <strong>Alt+C</strong> : Copy Full Prompt + Official Correction (if enabled)</li>
                     <li>${kbd('Shift + V')} : Ask AI Service (ChatGPT, Claude, etc.)</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
@@ -1005,6 +1113,7 @@ a[href*="/exam/"]   .mt-auto {
         const question = questionEl.textContent.trim();
         const answerBtns = getAnswerButtons();
         if (answerBtns.length === 0) return null;
+
         const labels = ['A', 'B', 'C', 'D', 'E'];
         const propositions = answerBtns.map((btn, i) => {
             const texts = [];
@@ -1015,6 +1124,7 @@ a[href*="/exam/"]   .mt-auto {
             const propText = texts.join(' ').trim() || btn.textContent.replace(/^[A-E]\s*/, '').trim();
             return `${labels[i] || (i + 1)}. ${propText}`;
         }).join('\n');
+
         return `Question médicale :\n${question}\n\nPropositions :\n${propositions}\n\nPour chaque proposition, indique si elle est VRAIE ou FAUSSE avec une explication courte et précise.`;
     }
 
@@ -1086,6 +1196,7 @@ a[href*="/exam/"]   .mt-auto {
             <p style="margin:16px 0 0 0;font-size:12px;opacity:0.6;text-align:center;">Press [Esc] to close</p>`;
         overlay.appendChild(panel);
         document.body.appendChild(overlay);
+
         panel.querySelectorAll('.eqe-ai-row').forEach(row => {
             const idx = parseInt(row.dataset.index);
             row.onmouseover = () => { row.style.backgroundColor = 'rgba(59,130,246,0.1)'; };
@@ -1101,6 +1212,7 @@ a[href*="/exam/"]   .mt-auto {
                 overlay.remove();
             };
         });
+
         const closeOnEsc = (e) => { if (e.key === 'Escape') { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); } };
         window.addEventListener('keydown', closeOnEsc);
         overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); window.removeEventListener('keydown', closeOnEsc); } };
@@ -1147,6 +1259,7 @@ a[href*="/exam/"]   .mt-auto {
             showToast(newHidden ? '📐 Sidebar hidden' : '📐 Sidebar visible', 'info');
             return;
         }
+
         const sidebar = document.querySelector(SIDEBAR_SELECTOR);
         if (!sidebar) return;
         const isCurrentlyHidden = sidebar.style.display === 'none';
@@ -1170,7 +1283,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // POMOTROID SESSION TIMER (full implementation)
+    // POMOTROID SESSION TIMER
     // ============================================================================
 
     const POMO_COLOR_INACTIVE = 'rgba(255,255,255,0.30)';
@@ -1179,8 +1292,17 @@ a[href*="/exam/"]   .mt-auto {
     const POMO_COLOR_DONE     = '#10b981';
 
     function pomoTotalSeconds() { return (POMO_HOURS * 60 + POMO_MINUTES) * 60; }
-    function pomoDisplayText() { const m = Math.ceil(pomoState.remaining / 60); return m > 0 ? String(m) : '0'; }
-    function pomoFontSize(text) { if (text.length >= 3) return '6.8'; if (text.length === 2) return '8.8'; return '10'; }
+
+    function pomoDisplayText() {
+        const m = Math.ceil(pomoState.remaining / 60);
+        return m > 0 ? String(m) : '0';
+    }
+
+    function pomoFontSize(text) {
+        if (text.length >= 3) return '6.8';
+        if (text.length === 2) return '8.8';
+        return '10';
+    }
 
     function createPomotroidBtn() {
         const btn = document.createElement('button');
@@ -1432,7 +1554,7 @@ a[href*="/exam/"]   .mt-auto {
     );
 
     // ============================================================================
-    // INLINE CONTROLS UI (added 📋 button)
+    // INLINE CONTROLS UI (added new 📋 button)
     // ============================================================================
 
     function toggleAutoAdvance(btnElement) {
@@ -1500,7 +1622,8 @@ a[href*="/exam/"]   .mt-auto {
 
         const btnPomo = createPomotroidBtn();
 
-        const btnCopyFull = makeBtn('eqe-btn-copy-full', '📋', 'Copy full prompt + official correction (see settings) – Alt+C', '18px');
+        // NEW: Copy Full Prompt button
+        const btnCopyFull = makeBtn('eqe-btn-copy-full', '📋', 'Copy full prompt + official correction (see settings)', '18px');
         btnCopyFull.onclick = copyFullPrompt;
 
         const btnGear = makeBtn(null,
@@ -1517,7 +1640,9 @@ a[href*="/exam/"]   .mt-auto {
     // DYNAMIC ISLAND TIMER DISPLAY
     // ============================================================================
 
-    function getPresetGradient() { return PRESETS[currentPresetIndex].gradient; }
+    function getPresetGradient() {
+        return PRESETS[currentPresetIndex].gradient;
+    }
 
     function createDynamicIslandTimer() {
         const island = document.createElement('div');
@@ -1620,7 +1745,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // SETTINGS UI
+    // SETTINGS UI (added new checkbox for "include correction")
     // ============================================================================
 
     function createSettingsPanel() {
@@ -1678,7 +1803,7 @@ a[href*="/exam/"]   .mt-auto {
                     <input type="checkbox" id="eqe-include-correction" ${config.includeCorrection?'checked':''} style="width:18px;height:18px;cursor:pointer;">
                     <span style="font-weight:600;color:${c.labelColor};">📋 Include official correction in copied prompt (when answer was revealed)</span>
                 </label>
-                <small style="color:${c.smallColor};margin-left:28px;display:block;margin-top:4px;">When copying the full prompt (📋 button or Alt+C), add the correct answer letters if the correction is visible.</small>
+                <small style="color:${c.smallColor};margin-left:28px;display:block;margin-top:4px;">When copying the full prompt (📋 button), add the correct answer letters if the correction is visible.</small>
             </div>
             <div style="margin-bottom:15px;padding-top:15px;border-top:1px solid ${c.borderTop};">
                 <label style="display:block;margin-bottom:8px;color:${c.labelColor};font-size:14px;font-weight:600;">🍅 Session Timer Duration:</label>
@@ -1778,6 +1903,10 @@ a[href*="/exam/"]   .mt-auto {
         else if (autoAdvanceEnabled && state.currentPhase) { startTimer(); }
     }
 
+    // ============================================================================
+    // TOAST NOTIFICATION
+    // ============================================================================
+
     function showToast(message, type = 'info') {
         const existing = document.getElementById('eqe-toast');
         if (existing) existing.remove();
@@ -1809,7 +1938,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // TIMER LOGIC (full implementations)
+    // TIMER LOGIC (epoch-guarded)
     // ============================================================================
 
     function clearTimer() {
@@ -2044,7 +2173,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // KEYBOARD HANDLER (Alt+C added)
+    // KEYBOARD HANDLER (Alt+Shift+C added)
     // ============================================================================
 
     function handleKeydown(e) {
@@ -2054,7 +2183,7 @@ a[href*="/exam/"]   .mt-auto {
         }
         const key = e.key.toLowerCase();
 
-        // Alt+C : Copy full prompt (AI‑ready)
+        // Alt+Shift+C : Copy full prompt (AI‑ready)
         if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && key === 'c') {
             e.preventDefault();
             e.stopPropagation();
@@ -2189,109 +2318,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // COURSE PAGE ARROW NAVIGATION
-    // ============================================================================
-
-    const COURSE_FOCUS_STYLE_ID = 'eqe-course-focus-style';
-    let courseFocusIndex = -1;
-
-    function getCourseCards() {
-        return [...document.querySelectorAll('a[href*="/lesson/"], a[href*="/exam/"]')];
-    }
-
-    function focusCourseCard(index) {
-        const cards = getCourseCards();
-        if (cards.length === 0) return;
-        if (!document.getElementById(COURSE_FOCUS_STYLE_ID)) {
-            const s = document.createElement('style');
-            s.id = COURSE_FOCUS_STYLE_ID;
-            s.textContent = `
-.eqe-card-focused {
-    outline: 3px solid #3b82f6 !important;
-    outline-offset: 2px !important;
-    box-shadow: 0 0 0 6px rgba(59,130,246,0.2) !important;
-    transition: outline 0.15s, box-shadow 0.15s !important;
-}`;
-            document.head.appendChild(s);
-        }
-        document.querySelectorAll('.eqe-card-focused').forEach(c => c.classList.remove('eqe-card-focused'));
-        const newIndex = Math.max(0, Math.min(index, cards.length - 1));
-        if (newIndex !== courseFocusIndex && state.resetConfirmPending) {
-            clearTimeout(state.resetConfirmTimeout);
-            state.resetConfirmPending = false;
-            state.resetConfirmTimeout = null;
-        }
-        courseFocusIndex = newIndex;
-        const card = cards[courseFocusIndex];
-        card.classList.add('eqe-card-focused');
-        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    function handleCoursePageKeys(e) {
-        if (!window.location.href.includes('/dashboard/course/')) return false;
-        const cards = getCourseCards();
-        if (cards.length === 0) return false;
-        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-        if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(key)) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            if (courseFocusIndex < 0) {
-                focusCourseCard(0);
-            } else {
-                const card = cards[0];
-                const grid = card?.parentElement;
-                let cols = 1;
-                if (grid) {
-                    const gridStyle = window.getComputedStyle(grid);
-                    const colTemplate = gridStyle.gridTemplateColumns;
-                    if (colTemplate) cols = colTemplate.split(/\s+/).filter(s => s.length > 0).length;
-                }
-                let delta = 0;
-                if (key === 'ArrowRight') delta = 1;
-                else if (key === 'ArrowLeft') delta = -1;
-                else if (key === 'ArrowDown') delta = cols;
-                else if (key === 'ArrowUp') delta = -cols;
-                focusCourseCard(courseFocusIndex + delta);
-            }
-            return true;
-        }
-        if ((key === 'Enter' || key === ' ') && courseFocusIndex >= 0) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            const card = cards[courseFocusIndex];
-            if (card?.href) window.location.href = card.href;
-            return true;
-        }
-        if (key === 'r' && courseFocusIndex >= 0) {
-            e.preventDefault(); e.stopImmediatePropagation();
-            const card = cards[courseFocusIndex];
-            const resetBtn = [...(card?.querySelectorAll('button') || [])].find(b =>
-                b.querySelector('svg.lucide-rotate-ccw') ||
-                /^\s*reset\s*$|réinitialiser/i.test(b.textContent || '')
-            );
-            if (!resetBtn) {
-                showToast('No reset button on this card', 'warning');
-                return true;
-            }
-            if (state.resetConfirmPending) {
-                clearTimeout(state.resetConfirmTimeout);
-                state.resetConfirmPending = false;
-                state.resetConfirmTimeout = null;
-                resetBtn.click();
-                showToast('🔄 Lesson progress reset', 'success');
-            } else {
-                state.resetConfirmPending = true;
-                showToast('⚠️ Press R again to reset this lesson\'s progress', 'warning');
-                state.resetConfirmTimeout = registerTimeout(setTimeout(() => {
-                    state.resetConfirmPending = false;
-                    state.resetConfirmTimeout = null;
-                }, 3000));
-            }
-            return true;
-        }
-        return false;
-    }
-
-    // ============================================================================
-    // REGISTRATION & CLEANUP
+    // CLEANUP & MEMORY MANAGEMENT
     // ============================================================================
 
     function registerInterval(id)  { cleanupRegistry.intervals.add(id);  return id; }
@@ -2386,6 +2413,7 @@ a[href*="/exam/"]   .mt-auto {
         if (state.observerDebounce) return;
         state.observerDebounce = registerTimeout(setTimeout(() => {
             state.observerDebounce = null;
+
             if (!document.getElementById('eqe-inline-container')) injectInlineControls();
             attachVanillaNavListeners();
             applyCourseStyles();
@@ -2393,6 +2421,7 @@ a[href*="/exam/"]   .mt-auto {
             injectHeaderSidebarToggle();
             injectModuleNavButtons();
             applyStatsPanelVisibility();
+
             const currentUrl = window.location.href;
             if (currentUrl !== state.lastUrl) {
                 state.lastUrl = currentUrl;

@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
+// @name         update eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
 // @namespace    https://e-qe.online/
-// @version      8.26
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy • Shift+V AI menu • S stats • NEW: 📋 copy full prompt + official correction (optional)
+// @version      8.27
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy • Shift+V AI menu • S stats • NEW: 📋 copy full prompt + official correction (optional) • Alt+Shift+C shortcut
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -41,7 +41,7 @@
         courseImagesHidden:  GM_getValue('courseImagesHidden',  true),
         courseCompact:       GM_getValue('courseCompact',       true),
         statsPanelHidden:    GM_getValue('statsPanelHidden',    true),
-        includeCorrection:   GM_getValue('includeCorrection',   false),   // NEW: include official correction when copying
+        includeCorrection:   GM_getValue('includeCorrection',   false),
     };
 
     let state = {
@@ -203,19 +203,21 @@
         return text;
     };
 
-    // ---------- module name extraction (borrowed from userscript 1) ----------
+    // ---------- module name extraction (IMPROVED) ----------
     function getCurrentModuleName() {
-        // 1) breadcrumb lesson link
+        const breadcrumbLink = document.querySelector('a[data-slot="breadcrumb-link"][href*="/dashboard/course/"]');
+        if (breadcrumbLink) {
+            const txt = breadcrumbLink.textContent?.trim();
+            if (txt && txt.length > 0) return txt;
+        }
         const lessonLink = document.querySelector('a[href*="/lesson/"]');
         if (lessonLink) {
             const txt = lessonLink.textContent?.trim();
             if (txt && txt.length > 0 && txt.length < 80) return txt;
         }
-        // 2) h1 on course page
         const h1 = document.querySelector('h1');
         const h1txt = h1?.textContent?.trim();
         if (h1txt && h1txt.length > 0) return h1txt;
-        // 3) fallback: document title
         const title = document.title.replace(/\s*\|.*$/, '').trim();
         return title || 'Unknown Module';
     }
@@ -234,14 +236,19 @@
     // --------------------------------------------------------------
 
     // ============================================================================
-    // COPY FULL PROMPT (NEW)
+    // COPY FULL PROMPT (IMPROVED)
+    // ============================================================================
+
+// ============================================================================
+    // COPY FULL PROMPT (IMPROVED MEDICAL ECNi/DES VERSION)
     // ============================================================================
 
     function buildFullPrompt(includeCorrection) {
-        const moduleName = getCurrentModuleName();
-        const examTitle  = getCurrentExamTitle();
+        const moduleName = getCurrentModuleName() || 'Unknown Module';
+        const examTitle  = getCurrentExamTitle() || 'Unknown Exam';
         const questionEl = document.querySelector('h1, h2, [class*="question"]');
         if (!questionEl) return null;
+
         const question = questionEl.textContent.trim();
         const btns = getAnswerButtons();
         if (btns.length === 0) return null;
@@ -257,29 +264,46 @@
             return `${labels[i] || (i+1)}. ${propText}`;
         }).join('\n');
 
-        let prompt = `Module: ${moduleName}\nExam: ${examTitle}\n\nQuestion:\n${question}\n\nOptions:\n${options}`;
+        let prompt = `Rôle : Agis en tant que Professeur agrégé de médecine et expert en pédagogie médicale. Ton objectif est de corriger ce QCM de niveau ECNi/EDN/DES avec une rigueur scientifique absolue et une mise en page ultra-lisible.\n\n`;
+
+        prompt += `### Contexte\n* Module : ${moduleName}\n* Examen : ${examTitle}\n\n`;
+        prompt += `### Données d'entrée\n**Question :**\n${question}\n\n`;
+        prompt += `**Options :**\n${options}\n\n`;
 
         if (includeCorrection) {
             const correct = getCorrectAnswers();
             if (correct && correct.length > 0) {
-                prompt += `\n\nOfficial correction: ${correct.join(', ')}`;
+                prompt += `**Correction officielle :** ${correct.join(', ')}\n\n`;
             } else if (isCorrectionRevealed()) {
-                prompt += `\n\nOfficial correction: [could not parse]`;
+                prompt += `**Correction officielle :** [Non extraite, merci de déterminer la bonne réponse]\n\n`;
             } else {
-                prompt += `\n\nOfficial correction: (not revealed yet – answer the question first)`;
+                prompt += `**Correction officielle :** (Non révélée, merci de résoudre le cas et de donner la réponse exacte)\n\n`;
             }
         }
+
+        prompt += `### Ta mission (à structurer strictement ainsi en Markdown) :\n`;
+        prompt += `1. **Le Verdict :** Indique clairement la ou les bonnes réponses en gras.\n`;
+        prompt += `2. **Le Diagnostic :** Identifie explicitement la pathologie décrite dans la vignette clinique avant d'aller plus loin.\n`;
+        prompt += `3. **Synthèse Clinique (Mots-clés) :** Isole sous forme de puces (bullet points) le faisceau d'arguments de la vignette qui mène à ce diagnostic.\n`;
+        prompt += `4. **Physiopathologie & Justification :** Explique précisément pourquoi la réponse choisie est la bonne (mécanisme, anapath, etc.).\n`;
+        prompt += `5. **Analyse inversée des Distracteurs :** Pour chaque proposition fausse, explique brièvement pourquoi elle est éliminée **ET** précise à quelle autre pathologie elle fait référence (ex: "Faux, c'est le mécanisme de la maladie de X").\n`;
+        prompt += `6. **La Perle du Professeur 💎 :** Un point de vigilance, un piège classique de l'examen, ou la dernière recommandation (HAS/Collèges) sur ce sujet.`;
+
         return prompt;
     }
-
     function copyFullPrompt() {
         const prompt = buildFullPrompt(config.includeCorrection);
         if (!prompt) {
-            showToast('❌ Could not extract question data', 'warning');
+            if (typeof showToast === 'function') {
+                showToast('❌ Could not extract question data', 'warning');
+            } else {
+                console.warn('❌ Could not extract question data');
+            }
             return;
         }
+
         navigator.clipboard.writeText(prompt).then(() => {
-            showToast('📋 Full prompt copied to clipboard!', 'success');
+            if (typeof showToast === 'function') showToast('📋 Structured AI prompt copied to clipboard!', 'success');
         }).catch(() => {
             const ta = document.createElement('textarea');
             ta.value = prompt;
@@ -288,7 +312,7 @@
             ta.select();
             document.execCommand('copy');
             ta.remove();
-            showToast('📋 Full prompt copied!', 'success');
+            if (typeof showToast === 'function') showToast('📋 Structured AI prompt copied!', 'success');
         });
     }
 
@@ -544,7 +568,7 @@
                     <thead><tr style="border-bottom:2px solid ${border};text-align:left;">
                         <th style="padding:12px 8px;">#</th>
                         <th style="padding:12px 8px;">Course Name</th>
-                      </tr></thead>
+                      </table></thead>
                     <tbody>
                         ${courses.map((c, i) => `
                         <tr class="eqe-course-row" data-url="${c.url}"
@@ -1045,7 +1069,7 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
                     <li>${kbd('V')} : Copy Question Prompt</li>
-                    <li><strong>📋 Button</strong> or <strong>Shift+?</strong> : Copy Full Prompt + Official Correction (if enabled)</li>
+                  <li><strong>📋 Button</strong> or <strong>Alt+C</strong> : Copy Full Prompt + Official Correction (if enabled)</li>
                     <li>${kbd('Shift + V')} : Ask AI Service (ChatGPT, Claude, etc.)</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>
@@ -2148,7 +2172,7 @@ a[href*="/exam/"]   .mt-auto {
     }
 
     // ============================================================================
-    // KEYBOARD HANDLER
+    // KEYBOARD HANDLER (Alt+Shift+C added)
     // ============================================================================
 
     function handleKeydown(e) {
@@ -2157,6 +2181,14 @@ a[href*="/exam/"]   .mt-auto {
             if (!document.activeElement.id?.startsWith('eqe-')) return;
         }
         const key = e.key.toLowerCase();
+
+        // Alt+Shift+C : Copy full prompt (AI‑ready)
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && key === 'c') {
+            e.preventDefault();
+            e.stopPropagation();
+            copyFullPrompt();
+            return;
+        }
 
         if (/^[1-9]$/.test(key) && !e.shiftKey && !e.ctrlKey && !e.altKey) {
             if (window.location.href.includes('/dashboard')) {

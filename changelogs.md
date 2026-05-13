@@ -1,5 +1,24 @@
 # Changelogs
 
+## 2026-05-13 - Version 8.33
+- **Fixed: copied prompt showed `* Module : e-qe made for you` on exam
+  pages.** Root cause: on `/exam/<uuid>` the URL has no
+  `/dashboard/course/<uuid>` segment, so the saved_courses lookup was
+  skipped; the breadcrumb course link on exam pages doesn't always wrap
+  its label in an `<h4>/<h3>/<span>`, so the DOM walk fell through to
+  the global `<h1>` ("e-qe made for you").
+- `getCourseModuleName()` rewritten:
+    - extracts the course UUID from any `a[href*="/dashboard/course/<uuid>"]`
+      on the page when the URL alone doesn't carry it;
+    - uses that UUID to query `saved_courses` (populated by the main
+      script's `scanAndSaveCourses()` on every dashboard visit) before
+      attempting any DOM read;
+    - added a second DOM pass that reads the `title` attribute of nested
+      elements inside the course link (dashboard cards always carry
+      `<h4 title="Module Name">`);
+    - `<h1>` and `<title>` fallbacks now skip text matching the site
+      header regex (`/^e[-\s]?qe(\s*[-–—:]\s*made\s*for\s*you)?\b/i`).
+
 ## 2026-05-13 - Version 8.32
 - **New: `📋` Copy AI-ready Prompt button + `Alt + C` shortcut** in the inline
   controls of every exam page. The prompt embeds:

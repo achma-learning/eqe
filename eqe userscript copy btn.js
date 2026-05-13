@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [COPY BUTTON]
 // @namespace    https://e-qe.online/
-// @version      8.32
+// @version      8.33
 // @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy (simple) • Shift+V AI menu • 📋 / Alt+C copy AI-ready prompt (Qn + topic + correction) • S stats
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -241,29 +241,79 @@
     // ---------- Module & Exam name extraction ----------
     const NAV_PREFIX_RE = /^(key=\d+|press=\[\d+\])\s+/;
 
+    // Matches the site's global header / document title so they don't
+    // get returned as a "module name" on exam pages (the v8.32 bug:
+    // "* Module : e-qe made for you").
+    const SITE_HEADER_RE = /^e[-\s]?qe(\s*[-–—:]\s*made\s*for\s*you)?\b/i;
+
     function getCourseModuleName() {
-        const curId = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
+        // 1) Course UUID. On /dashboard/course/<uuid> the URL gives it
+        //    directly; on /exam/<uuid> we have to scrape any link on the
+        //    page that points back to the parent course (sidebar logo,
+        //    breadcrumb, etc.).
+        let curId = location.pathname.match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
+        if (!curId) {
+            const links = document.querySelectorAll('a[href*="/dashboard/course/"]');
+            for (const link of links) {
+                const m = (link.getAttribute('href') || '').match(/\/dashboard\/course\/([0-9a-f-]+)/i);
+                if (m) { curId = m[1]; break; }
+            }
+        }
+
+        // 2) saved_courses GM storage — populated by the main script's
+        //    scanAndSaveCourses() on every dashboard visit. This is the
+        //    most reliable source because the name there was scraped from
+        //    the dashboard card's <h4>, not from whatever the exam page
+        //    happens to render.
         if (curId) {
             try {
                 const saved = GM_getValue('saved_courses', []);
                 const hit = Array.isArray(saved) ? saved.find(c => c?.id === curId) : null;
-                if (hit?.name) return hit.name.replace(NAV_PREFIX_RE, '').trim();
-            } catch { /* ignore */ }
+                if (hit?.name) {
+                    const cleaned = hit.name.replace(NAV_PREFIX_RE, '').trim();
+                    if (cleaned) return cleaned;
+                }
+            } catch { /* ignore corrupted storage */ }
         }
+
+        // 3) DOM walk over /dashboard/course/<uuid> links. The h4/h3/span
+        //    chain mirrors scanAndSaveCourses; we prefer h4/h3 over a
+        //    bare span because exam-page breadcrumb spans are often
+        //    icon-only or empty.
         const courseLinks = document.querySelectorAll('a[href*="/dashboard/course/"]');
         for (const link of courseLinks) {
-            const id = link.href.split('/').pop().split('?')[0].split('#')[0];
+            const id = (link.getAttribute('href') || '').match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
             if (curId && id !== curId) continue;
-            const nameEl = link.querySelector('h4') || link.querySelector('h3') || link.querySelector('span');
+            const nameEl = link.querySelector('h4') ||
+                           link.querySelector('h3') ||
+                           link.querySelector('span');
             if (!nameEl) continue;
             const name = nameEl.innerText.trim().replace(NAV_PREFIX_RE, '').trim();
-            if (name && !/^unknown/i.test(name)) return name;
+            if (!name || /^unknown/i.test(name) || SITE_HEADER_RE.test(name)) continue;
+            return name;
         }
+
+        // 4) Title-attribute fallback — every dashboard card carries
+        //    `<h4 title="Module Name">`, and the breadcrumb sometimes
+        //    keeps the title even when the visible text is empty.
+        for (const link of courseLinks) {
+            const id = (link.getAttribute('href') || '').match(/\/dashboard\/course\/([0-9a-f-]+)/i)?.[1];
+            if (curId && id !== curId) continue;
+            const titled = link.querySelector('[title]');
+            const t = titled?.getAttribute('title')?.trim();
+            if (t && !SITE_HEADER_RE.test(t)) return t.replace(NAV_PREFIX_RE, '').trim();
+        }
+
+        // 5) Page heading — skipped if it's the site's global header.
         const h1 = document.querySelector('h1');
         const h1txt = h1?.textContent?.trim().replace(NAV_PREFIX_RE, '').trim();
-        if (h1txt) return h1txt;
+        if (h1txt && !SITE_HEADER_RE.test(h1txt)) return h1txt;
+
+        // 6) <title> — same skip.
         const title = document.title.replace(/\s*\|.*$/, '').trim();
-        return title || 'Unknown Module';
+        if (title && !SITE_HEADER_RE.test(title)) return title;
+
+        return 'Unknown Module';
     }
 
     function getCurrentExamTitle() {

@@ -1,5 +1,37 @@
 # Changelogs
 
+## 2026-05-13 - Version 8.32
+- **New: `📋` Copy AI-ready Prompt button + `Alt + C` shortcut** in the inline
+  controls of every exam page. The prompt embeds:
+    - Module name (from saved courses cache, same source as the dashboard
+      quick-nav / scraper).
+    - Exam title with `(Qn/total)` suffix when the question number can be
+      detected — toggleable in the settings panel.
+    - Per-question topic tag pulled from the breadcrumb lesson link
+      (`a[data-slot="breadcrumb-link"][href*="/lesson/"]`).
+    - Question text + propositions extracted via the scraper's anchored
+      selectors (`h2.text-base.font-semibold`, `span.flex-1` for option
+      text, `span.font-black` for the actual letter badge so 4-option
+      exams or odd letter orders still render correctly).
+    - Optional "Correction officielle" block: prints the revealed correct
+      letters when the answer has been validated on the page. Detects
+      Correction officielle vs. Correction collective via the badge
+      (`span.inline-flex.rounded-md`) and includes the badge label inline.
+- **New settings (gear icon, `Shift + S`):**
+    - "Include official correction in copied prompt" — off by default.
+    - "Add exam name to the prompt" — on by default.
+- **Selector hardening (borrowed from `scrape-eqe.js`):**
+    - `getQuestionText` now filters placeholder/loading text
+      (`PLACEHOLDER_TEXTS`) and uses `h2.text-base.font-semibold` first.
+    - `getCurrentExamTitle` strips trailing `<n>%` progress that the
+      sidebar sometimes piggybacks onto `span.truncate.font-medium`.
+    - Added `getCurrentQuestionNumber`, `getTotalQuestions`,
+      `getQuestionTag`, `getCorrectionType`, `getCorrectAnswers`,
+      `isCorrectionRevealed`, `isCollectiveCorrection` mirroring the
+      scraper.
+- Shortcuts overlay (`Shift + ?`) and `shortcuts.txt` updated to document
+  `Alt + C` / 📋.
+
 ## 2026-04-25 - Version 8.25
 - Fixed: course-page sidebar **wasn't actually hidden by default on cold
   page loads** despite `courseSidebarHidden=true`. The previous

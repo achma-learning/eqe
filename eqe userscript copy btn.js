@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         UPDATE eqe fmpm - e-qe.online Auto-Advance + Inline Controls [IMPROVED]
+// @name         eqe fmpm - e-qe.online Auto-Advance + Inline Controls [COPY BUTTON]
 // @namespace    https://e-qe.online/
-// @version      8.31
-// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy • Shift+V AI menu • S stats • 📋 copy full prompt (with optional exam name & official correction) • Alt+C shortcut • Enhanced extraction
+// @version      8.32
+// @description  ←→↑↓ nav • T/8 loadouts • Space/Enter check • H sidebar • Header sidebar toggle • Module quick-nav buttons • F fullscreen • P pomo • V copy (simple) • Shift+V AI menu • 📋 / Alt+C copy AI-ready prompt (Qn + topic + correction) • S stats
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -267,20 +267,73 @@
     }
 
     function getCurrentExamTitle() {
+        // 1) Dedicated span. Strip trailing "<digits>%" defensively — the
+        //    sidebar progress sometimes shares this class set.
         const dedicated = document.querySelectorAll('span.truncate.font-medium');
         for (const el of dedicated) {
             const txt = el.textContent?.trim();
-            if (txt && txt.length > 0 && txt.length < 80) return txt;
+            if (!txt || txt.length === 0 || txt.length >= 80) continue;
+            const cleaned = txt.replace(/\s*\d+\s*%\s*$/, '').trim();
+            if (cleaned) return cleaned;
         }
+        // 2) Heading "<title> Q<n>" — strip the Q-suffix to get the title.
+        const headings = document.querySelectorAll('h1, h2, h3');
+        for (const h of headings) {
+            const m = h.textContent?.trim().match(/^(.+?)\s+Q\s*\d+\s*$/i);
+            if (m && m[1]) return m[1].trim();
+        }
+        // 3) Breadcrumb exam link as last resort.
         const breadcrumbExam = document.querySelector('a[href*="/exam/"]:not([href*="/dashboard/"])');
         const bcTxt = breadcrumbExam?.textContent?.trim();
         if (bcTxt && bcTxt.length > 0 && bcTxt.length < 80) return bcTxt;
-        const qHeading = document.querySelector('h1, h2, h3');
-        if (qHeading) {
-            const m = qHeading.textContent.trim().match(/^(.+?)\s+Q\s*\d+\s*$/i);
-            if (m && m[1]) return m[1].trim();
-        }
         return 'Exam';
+    }
+
+    // Current Q-number indicator (from the scraper):
+    //   <div class="text-sm font-black …">7</div>
+    // Skips aside/nav descendants so the sidebar's Q-list doesn't win.
+    function getCurrentQuestionNumber() {
+        const nodes = document.querySelectorAll('div.text-sm.font-black');
+        const matches = [];
+        nodes.forEach(el => {
+            if (el.children.length > 0) return;
+            const txt = el.textContent?.trim();
+            if (!/^\d+$/.test(txt || '')) return;
+            const n = parseInt(txt, 10);
+            if (n >= 1 && n <= 999) matches.push({ n, el });
+        });
+        if (matches.length === 0) return null;
+        const main = matches.find(m => !m.el.closest('aside, nav, [class*="sidebar"]'));
+        return (main || matches[0]).n;
+    }
+
+    function getTotalQuestions() {
+        const direct = document.querySelectorAll('div.text-sm.font-bold.opacity-30');
+        for (const el of direct) {
+            if (el.children.length > 0) continue;
+            const txt = el.textContent?.trim();
+            if (!/^\d+$/.test(txt || '')) continue;
+            const n = parseInt(txt, 10);
+            if (n > 0 && n < 500) return n;
+        }
+        return null;
+    }
+
+    // Per-question topic tag from the breadcrumb lesson link:
+    //   <a data-slot="breadcrumb-link" href="/lesson/<uuid>?…">Dermatose bulleuse</a>
+    function getQuestionTag() {
+        const direct = document.querySelector(
+            'a[data-slot="breadcrumb-link"][href*="/lesson/"]'
+        );
+        const txt = direct?.textContent?.trim();
+        if (txt) return txt;
+        const candidates = document.querySelectorAll('a[href*="/lesson/"]');
+        for (const a of candidates) {
+            if (a.closest('aside, nav[class*="sidebar"]')) continue;
+            const t = a.textContent?.trim();
+            if (t && t.length > 0 && t.length < 80) return t;
+        }
+        return null;
     }
     // --------------------------------------------------------------
 
@@ -288,52 +341,87 @@
     // COPY FULL PROMPT (IMPROVED MEDICAL ECNi/DES VERSION)
     // ============================================================================
 
-    function buildFullPrompt(includeCorrection, includeExamName) {
-        const moduleName = getCourseModuleName() || 'Module inconnu';
-        const examTitle  = getCurrentExamTitle() || 'Examen inconnu';
-        const question   = getQuestionText();
+    const LABELS = ['A', 'B', 'C', 'D', 'E'];
+
+    // Capture question, options, Qn, topic, correction status — borrowed
+    // from the scraper's getCurrentQuestion + DOM-anchored label reads so
+    // exams with only 4 options (or unusual letter order) still render right.
+    function captureQuestionData() {
+        const question = getQuestionText();
         if (!question) return null;
 
         const btns = getAnswerButtons();
         if (btns.length === 0) return null;
 
-        const labels = ['A', 'B', 'C', 'D', 'E'];
         const options = btns.map((btn, i) => {
-            const textEl = btn.querySelector('span.flex-1');
-            let propText = textEl?.textContent?.trim();
+            const labelEl = btn.querySelector('span.font-black');
+            const label   = labelEl?.textContent?.trim() || LABELS[i] || String(i + 1);
+            const textEl  = btn.querySelector('span.flex-1');
+            let propText  = textEl?.textContent?.trim();
             if (!propText) {
                 const parts = [];
                 btn.querySelectorAll('p, span').forEach(el => {
                     const t = el.textContent.trim();
-                    if (t && !labels.includes(t) && t.length > 1) parts.push(t);
+                    if (t && !LABELS.includes(t) && t.length > 1) parts.push(t);
                 });
-                propText = parts.join(' ').trim() || btn.textContent.replace(/^[A-E]\s*/, '').trim();
+                propText = parts.join(' ').trim() ||
+                    btn.textContent.replace(/^[A-E]\s*/, '').trim();
             }
-            return `${labels[i] || (i+1)}. ${propText}`;
-        }).join('\n');
+            return { label, text: propText };
+        });
+
+        return {
+            question,
+            options,
+            qn:             getCurrentQuestionNumber(),
+            total:          getTotalQuestions(),
+            tag:            getQuestionTag(),
+            correctionType: getCorrectionType(),
+            correctAnswers: getCorrectAnswers(),
+            revealed:       isCorrectionRevealed(),
+        };
+    }
+
+    function buildFullPrompt(includeCorrection, includeExamName) {
+        const data = captureQuestionData();
+        if (!data) return null;
+
+        const moduleName = getCourseModuleName() || 'Module inconnu';
+        const examTitle  = getCurrentExamTitle() || 'Examen inconnu';
+
+        const optionsTxt = data.options
+            .map(o => `${o.label}. ${o.text}`)
+            .join('\n');
 
         let prompt = `Rôle : Agis en tant que Professeur agrégé de médecine et expert en pédagogie médicale. Ton objectif est de corriger ce QCM de niveau ECNi/EDN/DES avec une rigueur scientifique absolue et une mise en page ultra-lisible.\n\n`;
         prompt += `### Contexte\n* Module : ${moduleName}`;
         if (includeExamName) {
             prompt += `\n* Examen : ${examTitle}`;
+            if (data.qn != null) {
+                prompt += data.total != null
+                    ? ` (Q${data.qn}/${data.total})`
+                    : ` (Q${data.qn})`;
+            }
+        }
+        if (data.tag) {
+            prompt += `\n* Thème : ${data.tag}`;
         }
         prompt += `\n\n`;
-        prompt += `### Données d'entrée\n**Question :**\n${question}\n\n`;
-        prompt += `**Options :**\n${options}\n\n`;
+        prompt += `### Données d'entrée\n**Question :**\n${data.question}\n\n`;
+        prompt += `**Options :**\n${optionsTxt}\n\n`;
 
         if (includeCorrection) {
-            const isCollective = isCollectiveCorrection();
+            const ct = data.correctionType;
+            const isCollective = ct ? /collective/i.test(ct) : false;
+            const ctLabel = ct ? ` (${ct})` : '';
             if (isCollective) {
-                prompt += `**Correction officielle :** (Correction collective – les réponses exactes ne sont pas fournies individuellement par le site. Veuillez déterminer la réponse correcte par analyse.)\n\n`;
+                prompt += `**Correction officielle${ctLabel} :** Les réponses exactes ne sont pas fournies individuellement par le site. Détermine la (ou les) réponse(s) correcte(s) par analyse.\n\n`;
+            } else if (data.correctAnswers && data.correctAnswers.length > 0) {
+                prompt += `**Correction officielle${ctLabel} :** ${data.correctAnswers.join(', ')}\n\n`;
+            } else if (data.revealed) {
+                prompt += `**Correction officielle${ctLabel} :** [Non extraite automatiquement – détermine la bonne réponse]\n\n`;
             } else {
-                const correct = getCorrectAnswers();
-                if (correct && correct.length > 0) {
-                    prompt += `**Correction officielle :** ${correct.join(', ')}\n\n`;
-                } else if (isCorrectionRevealed()) {
-                    prompt += `**Correction officielle :** [Non extraite automatiquement – merci de déterminer la bonne réponse]\n\n`;
-                } else {
-                    prompt += `**Correction officielle :** (Non révélée – répondez d'abord à la question pour la voir apparaître)\n\n`;
-                }
+                prompt += `**Correction officielle :** (Non révélée – réponds d'abord à la question sur le site pour la voir apparaître)\n\n`;
             }
         }
 
@@ -966,8 +1054,8 @@ a[href*="/exam/"]   .mt-auto {
                     <li>${kbd('I')} : View Image</li>
                     <li>${kbd('P')} : Start / Pause Session Timer (🍅)</li>
                     <li>${kbd('C')} : Toggle Official/Community</li>
-                    <li>${kbd('V')} : Copy Question Prompt</li>
-                    <li><strong>📋 Button</strong> or <strong>Alt+C</strong> : Copy Full Prompt + Official Correction (if enabled)</li>
+                    <li>${kbd('V')} : Copy simple question prompt</li>
+                    <li>${kbd('Alt + C')} or 📋 button : Copy AI-ready prompt <em style="font-size:11px;opacity:0.7;">(question + Qn + topic + options [+ official correction when revealed])</em></li>
                     <li>${kbd('Shift + V')} : Ask AI Service (ChatGPT, Claude, etc.)</li>
                     <li>${kbd('A')} : Open AI Explanation</li>
                     <li>${kbd('Shift + A')} or ${kbd('7')} : Toggle Auto-Advance</li>

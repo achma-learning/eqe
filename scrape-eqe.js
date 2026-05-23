@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.7.2
+// @version      0.7.3
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -69,6 +69,31 @@
     // Hard cap of questions per exam — guards against infinite loops if we
     // misdetect end-of-exam.
     const MAX_QUESTIONS_PER_EXAM = 200;
+
+    // PASS 3 (last-resort recovery): once PASS 1 + PASS 2 have run and the
+    // exam still has missing questions, we reload the page and try the
+    // surgical gap-fill again from scratch. The reload is the magic part —
+    // it resets React's question-tracking state, throws away any stuck
+    // sidebar layout, and gives navigation a clean slate. Without the
+    // reload, the same click that silently failed before keeps failing.
+    //
+    // Budget per exam: up to MAX_RECOVERY_RELOADS reloads, each one trying
+    // every still-missing Qn exactly once (no inner rounds — we'd rather
+    // burn a fresh reload than spin inside a stuck DOM). Per Qn we never
+    // exceed MAX_ATTEMPTS_PER_QUESTION attempts total across the recovery
+    // phase, so a stubborn question can't soak up every reload.
+    const MAX_RECOVERY_RELOADS      = 3;
+    const MAX_ATTEMPTS_PER_QUESTION = 3;
+    // Recovery uses deliberately safer timings than the user's preset —
+    // this is the "last chance" pass, so we trade speed for reliability.
+    // The Math.max() guards in runExamScrape() apply these as floors, not
+    // overrides, so a user on the "safe" preset still gets their settings.
+    const RECOVERY_POST_CLICK_MS    = 600;
+    const RECOVERY_SURGICAL_MS      = 1200;
+    const RECOVERY_STABILITY_MS     = 500;
+    // Pause before location.reload() so GM_setValue has time to flush the
+    // job state before the script context gets torn down.
+    const RECOVERY_RELOAD_DELAY_MS  = 2500;
 
     // Scrape-speed presets exposed via the gear settings panel.
     const SPEED_PRESETS = {
@@ -1462,32 +1487,64 @@
         const currentExam = job.exams[job.currentExamIndex];
         if (!currentExam || !location.href.startsWith(currentExam.url)) return;
 
+        // Recovery mode is set by a previous runExamScrape() call right
+        // before it triggered location.reload(). On the re-entry we skip
+        // PASS 1 entirely and go straight to a single recovery sweep over
+        // the still-missing Qns.
+        const isRecovery = job.phase === 'recovery';
+
         injectProgressHud(job);
 
         await sleep(PAGE_SETTLE_MS);
         const firstQuestion = await captureStableQuestion(QUESTION_WAIT_MS);
-        if (!firstQuestion) {
+        if (!firstQuestion && !isRecovery) {
             showToast(`Couldn't read questions on ${currentExam.title}. Skipping.`, 'warning');
             return advanceToNextExam(job);
         }
 
         const examTitle = getExamTitle(currentExam.url);
         if (!job.data[examTitle]) {
-            job.data[examTitle] = { url: currentExam.url, total: null, questions: [] };
+            job.data[examTitle] = {
+                url: currentExam.url,
+                total: null,
+                questions: [],
+                recoveryReloads: 0,
+                qAttempts: {},
+            };
         }
+        const block = job.data[examTitle];
+        // Backfill fields on blocks created by older versions of the
+        // scraper — they wouldn't have these yet.
+        if (block.recoveryReloads == null) block.recoveryReloads = 0;
+        if (!block.qAttempts) block.qAttempts = {};
         // Discover total once. Re-check on later iterations only if still null.
-        job.data[examTitle].total = job.data[examTitle].total || getTotalQuestions();
-        job.currentExamCount = 0;
+        block.total = block.total || getTotalQuestions();
         saveJob(job);
+
+        // Hydrate the working set from anything we already captured. On the
+        // initial scrape this starts empty; on a recovery reload it picks
+        // up exactly where PASS 2 left off.
+        const captured = (block.questions || []).slice();
+        const seenTexts = new Set(captured.map(q => q.text));
+        job.currentExamCount = captured.length;
+        saveJob(job);
+
+        if (isRecovery) {
+            log(
+                `runExamScrape: re-entering "${examTitle}" in recovery mode ` +
+                `(reload ${block.recoveryReloads}/${MAX_RECOVERY_RELOADS}, ` +
+                `${captured.length}/${block.total || '?'} captured so far).`
+            );
+        }
 
         // -------------- PASS 1: linear walk via the Next button --------------
         // Same auto-advance logic as v0.3.2 (text-change), but every capture
-        // is tagged with its real qn from the DOM indicator.
+        // is tagged with its real qn from the DOM indicator. Skipped during
+        // recovery reloads — we already have the linear pass's data on disk
+        // and we don't want to re-walk an exam just to find the same gaps.
         let lastText = null;
-        const captured = []; // { qn, text, props }
-        const seenTexts = new Set();
 
-        for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
+        if (!isRecovery) for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
             // Up to MAX_FETCH_ATTEMPTS tries with growing backoff. Returns
             // null when both the wait timed out AND Next is disabled — the
             // unambiguous end-of-exam signal.
@@ -1564,17 +1621,40 @@
         //   strategy C: click Q[n] in the sidebar directly (last resort)
         // After every click we verify against the page's Qn indicator
         // before accepting the capture, and we use a slower SURGICAL_PAUSE
-        // so React is fully settled. Up to MAX_GAP_FILL_ROUNDS (3) rounds.
-        const total = job.data[examTitle].total;
+        // so React is fully settled. Up to MAX_GAP_FILL_ROUNDS (3) rounds
+        // on the initial pass; on recovery reloads we do a single sweep so
+        // the reload budget (not the round count) drives total work.
+        //
+        // During recovery we also apply RECOVERY_*_MS as floors on the
+        // user's preset, and bump per-Q attempt counters in block.qAttempts
+        // so a stubborn Qn can't consume every reload.
+        if (isRecovery) {
+            POST_CLICK_PAUSE_MS = Math.max(POST_CLICK_PAUSE_MS, RECOVERY_POST_CLICK_MS);
+            SURGICAL_PAUSE_MS   = Math.max(SURGICAL_PAUSE_MS,   RECOVERY_SURGICAL_MS);
+            STABILITY_DELAY_MS  = Math.max(STABILITY_DELAY_MS,  RECOVERY_STABILITY_MS);
+        }
+        const total = block.total;
+        const surgicalRounds = isRecovery ? 1 : MAX_GAP_FILL_ROUNDS;
         if (total) {
-            for (let round = 0; round < MAX_GAP_FILL_ROUNDS; round++) {
+            for (let round = 0; round < surgicalRounds; round++) {
                 const have = indexByQn(captured);
                 const missing = [];
-                for (let n = 1; n <= total; n++) if (!have[n]) missing.push(n);
+                for (let n = 1; n <= total; n++) {
+                    if (have[n]) continue;
+                    // Skip Qns that have already burned their attempt budget.
+                    // Only enforced during recovery — the initial PASS 2 is
+                    // not counted against the cap.
+                    if (isRecovery && (block.qAttempts[n] || 0) >= MAX_ATTEMPTS_PER_QUESTION) continue;
+                    missing.push(n);
+                }
                 if (missing.length === 0) break;
 
                 let recovered = 0;
                 for (const n of missing) {
+                    if (isRecovery) {
+                        block.qAttempts[n] = (block.qAttempts[n] || 0) + 1;
+                        saveJob(job);
+                    }
                     const got = await navigateToMissing(n, have, total);
                     if (!got) continue;
 
@@ -1588,7 +1668,7 @@
                     // pass 1 — but skip on "Correction collective" exams,
                     // which don't expose answers.
                     let correctAnswers = got.correctAnswers;
-                    const corrBadge = got.correction || job.data[examTitle].correction;
+                    const corrBadge = got.correction || block.correction;
                     if (settings.withCorrection
                         && !correctAnswers
                         && !isCollectiveCorrection(corrBadge)) {
@@ -1605,13 +1685,13 @@
                         correctAnswers: correctAnswers ?? null,
                     });
                     seenTexts.add(got.text);
-                    if (!job.data[examTitle].correction && got.correction) {
-                        job.data[examTitle].correction = got.correction;
+                    if (!block.correction && got.correction) {
+                        block.correction = got.correction;
                     }
                     recovered++;
                 }
 
-                job.data[examTitle].questions = stitchNeighbors(captured);
+                block.questions = stitchNeighbors(captured);
                 job.currentExamCount = captured.length;
                 saveJob(job);
                 updateProgressHud(job, examTitle);
@@ -1620,6 +1700,51 @@
             }
         }
 
+        // -------------- PASS 3: RELOAD-based recovery (last resort) -----
+        // If PASS 2 left holes AND we still have reloads in the budget,
+        // save the job, reload the page, and re-enter runExamScrape() in
+        // recovery mode. The page reload is the actual fix — it resets
+        // React state that PASS 2's same-session retries couldn't.
+        //
+        // We only reload when at least one missing Qn still has attempts
+        // left under MAX_ATTEMPTS_PER_QUESTION; otherwise there's nothing
+        // for the next pass to try, so we just give up gracefully.
+        if (total) {
+            const have = indexByQn(captured);
+            const stillTryable = [];
+            for (let n = 1; n <= total; n++) {
+                if (have[n]) continue;
+                if ((block.qAttempts[n] || 0) >= MAX_ATTEMPTS_PER_QUESTION) continue;
+                stillTryable.push(n);
+            }
+            if (stillTryable.length > 0 && block.recoveryReloads < MAX_RECOVERY_RELOADS) {
+                block.recoveryReloads += 1;
+                job.phase = 'recovery';
+                saveJob(job);
+                const listed = stillTryable.slice(0, 10).map(n => `Q${n}`).join(', ');
+                const more   = stillTryable.length > 10 ? `, +${stillTryable.length - 10} more` : '';
+                showToast(
+                    `🔁 Recovery ${block.recoveryReloads}/${MAX_RECOVERY_RELOADS} — ` +
+                    `${stillTryable.length} missing on ${examTitle}, reloading…`,
+                    'info'
+                );
+                log(
+                    `runExamScrape: triggering recovery reload ` +
+                    `${block.recoveryReloads}/${MAX_RECOVERY_RELOADS} ` +
+                    `for "${examTitle}" — still missing: [${listed}${more}]`
+                );
+                await sleep(RECOVERY_RELOAD_DELAY_MS);
+                location.reload();
+                return;
+            }
+        }
+
+        // Recovery is finished (either everything's captured or the budget
+        // ran out). Clear the recovery flag and move to the next exam.
+        if (job.phase) {
+            job.phase = null;
+            saveJob(job);
+        }
         await advanceToNextExam(job);
     }
 
@@ -1803,6 +1928,15 @@
             ? `Module ${queue.currentIndex + 1}/${queue.modules.length}: <b>${escapeHtml(job.module || queue.modules[queue.currentIndex]?.name || '…')}</b>`
             : `Module: <b>${escapeHtml(job.module || '…')}</b>`;
 
+        // Recovery banner — shown when PASS 3 has fired at least one reload
+        // for this exam. Helps the user see why the page just reloaded
+        // mid-scrape and how many recovery passes are left.
+        const reloads = block?.recoveryReloads || 0;
+        const inRecovery = job.phase === 'recovery' || reloads > 0;
+        const recoveryLine = inRecovery
+            ? `<div style="margin-top:4px;color:#fbbf24;">🔁 Recovery ${reloads}/${MAX_RECOVERY_RELOADS}</div>`
+            : '';
+
         // Hide the exam line until exams are discovered (briefly true at
         // the top of each batch module while autoStartCourseScrape polls).
         const examLine = totalExams > 0
@@ -1810,7 +1944,7 @@
               `Questions captured: <b>${ratio}</b>`
             : `<i style="opacity:0.7;">discovering exams…</i>`;
 
-        el.innerHTML = `${moduleLine}<br>${examLine}`;
+        el.innerHTML = `${moduleLine}<br>${examLine}${recoveryLine}`;
     }
 
     // Lightweight HUD shown by autoStartCourseScrape while polling for

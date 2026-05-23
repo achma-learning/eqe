@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.7.2
-// @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
+// @version      0.7.3
+// @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result. After the linear + surgical passes finish, the script also runs up to 3 final recovery passes that revisit any exam with remaining gaps under a fresh page load — last resort to fill stubborn missing Qns.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
 // @grant        GM_getValue
@@ -59,6 +59,16 @@
     let SURGICAL_PAUSE_MS    = 500;
     // Maximum number of surgical gap-fill rounds before giving up.
     const MAX_GAP_FILL_ROUNDS = 3;
+    // After the whole module finishes (every exam scraped + per-exam
+    // gap-fill done), we run up to this many "final recovery" passes that
+    // revisit any exam which still has missing Qns under a fresh page
+    // load. Capped to honour the user's "max 3 attempts per question"
+    // contract.
+    const MAX_FINAL_RECOVERY_ROUNDS = 3;
+    // During final recovery we *always* run with the Safe speed preset
+    // (slowest, most reliable). Stubborn missing Qns usually fail because
+    // the page didn't settle in time — give it as much room as we can.
+    const RECOVERY_SPEED_PRESET = { post: 400, surgical: 800, stability: 400 };
     // Total attempts (including the first try) for a single question fetch
     // or a single correction reveal. Retries grow in length to give the
     // page more time on each pass — see RETRY_BACKOFF_MS.
@@ -1438,6 +1448,40 @@
         return out;
     }
 
+    // Walk job.data and return exam entries that still have at least one
+    // missing Qn (i.e. captured < total, with total known from the page
+    // indicator). Each entry is { url, title } so we can re-navigate.
+    function findGapExams(job) {
+        const out = [];
+        for (const [title, block] of Object.entries(job?.data || {})) {
+            if (!block || !block.url || !block.total) continue;
+            const have = new Set(
+                (block.questions || [])
+                    .map(q => q.qn)
+                    .filter(n => Number.isInteger(n))
+            );
+            let missing = 0;
+            for (let n = 1; n <= block.total; n++) if (!have.has(n)) missing++;
+            if (missing > 0) out.push({ url: block.url, title });
+        }
+        return out;
+    }
+
+    // Navigate to a URL, forcing a real page reload when we're already
+    // on it (Next.js no-ops identical hrefs). Used by the final recovery
+    // pass so we always start each revisit from a fresh DOM state.
+    function navigateOrReload(url) {
+        try {
+            const target  = new URL(url, location.origin);
+            const samePath = target.pathname === location.pathname;
+            if (samePath) {
+                location.reload();
+                return;
+            }
+        } catch { /* fall through to plain href set */ }
+        location.href = url;
+    }
+
     // Stitch prev/next text snippets onto each captured question. Used to
     // detect duplicates and surface ordering bugs later if needed.
     function stitchNeighbors(arr) {
@@ -1455,6 +1499,19 @@
 
         // Apply the user's saved scrape-speed before any pauses fire.
         const settings = loadSettings();
+        const isRecovery = (job.recoveryRound || 0) > 0;
+
+        // Final recovery passes always run on the Safe preset — these are
+        // the questions that already failed every earlier attempt, so we
+        // trade speed for reliability and let the DOM settle thoroughly.
+        if (isRecovery) {
+            POST_CLICK_PAUSE_MS = RECOVERY_SPEED_PRESET.post;
+            SURGICAL_PAUSE_MS   = RECOVERY_SPEED_PRESET.surgical;
+            STABILITY_DELAY_MS  = RECOVERY_SPEED_PRESET.stability;
+            log(`runExamScrape: recovery round ${job.recoveryRound}/${MAX_FINAL_RECOVERY_ROUNDS} ` +
+                `— switched to Safe timings (post=${POST_CLICK_PAUSE_MS}ms, ` +
+                `surgical=${SURGICAL_PAUSE_MS}ms, stability=${STABILITY_DELAY_MS}ms)`);
+        }
 
         // Make sure we're on the exam this job expects. If the user clicked
         // away, just abort silently — the start button on the course page
@@ -1464,16 +1521,31 @@
 
         injectProgressHud(job);
 
-        await sleep(PAGE_SETTLE_MS);
+        // In recovery mode, give the page extra grace before the first
+        // read — Safe timings + a doubled settle window.
+        const settleMs = isRecovery ? PAGE_SETTLE_MS * 2 : PAGE_SETTLE_MS;
+        await sleep(settleMs);
         const firstQuestion = await captureStableQuestion(QUESTION_WAIT_MS);
         if (!firstQuestion) {
             showToast(`Couldn't read questions on ${currentExam.title}. Skipping.`, 'warning');
             return advanceToNextExam(job);
         }
 
-        const examTitle = getExamTitle(currentExam.url);
+        // Resolve the examTitle key for job.data. Normally we derive it
+        // from the page, but on a revisit the rendering can drift slightly
+        // — so if the derived title is new AND another block already has
+        // this exam's URL, reuse the existing key (otherwise we'd split
+        // captured data across two entries and the gap detection would
+        // get confused).
+        let examTitle = getExamTitle(currentExam.url);
         if (!job.data[examTitle]) {
-            job.data[examTitle] = { url: currentExam.url, total: null, questions: [] };
+            const existingByUrl = Object.entries(job.data || {})
+                .find(([, b]) => b?.url === currentExam.url);
+            if (existingByUrl) {
+                examTitle = existingByUrl[0];
+            } else {
+                job.data[examTitle] = { url: currentExam.url, total: null, questions: [] };
+            }
         }
         // Discover total once. Re-check on later iterations only if still null.
         job.data[examTitle].total = job.data[examTitle].total || getTotalQuestions();
@@ -1483,11 +1555,21 @@
         // -------------- PASS 1: linear walk via the Next button --------------
         // Same auto-advance logic as v0.3.2 (text-change), but every capture
         // is tagged with its real qn from the DOM indicator.
+        //
+        // Skipped entirely in recovery mode — we trust the captures we
+        // already have and jump straight to PASS 2 (surgical gap-fill).
         let lastText = null;
-        const captured = []; // { qn, text, props }
-        const seenTexts = new Set();
+        const captured = isRecovery
+            ? [...(job.data[examTitle].questions || [])]
+            : [];
+        const seenTexts = new Set(captured.map(q => q.text).filter(Boolean));
 
-        for (let i = 0; i < MAX_QUESTIONS_PER_EXAM; i++) {
+        if (isRecovery) {
+            log(`runExamScrape: recovery — preloaded ${captured.length} existing ` +
+                `captures for "${examTitle}", skipping PASS 1.`);
+        }
+
+        for (let i = 0; !isRecovery && i < MAX_QUESTIONS_PER_EXAM; i++) {
             // Up to MAX_FETCH_ATTEMPTS tries with growing backoff. Returns
             // null when both the wait timed out AND Next is disabled — the
             // unambiguous end-of-exam signal.
@@ -1677,6 +1759,50 @@
         job.currentExamIndex += 1;
         saveJob(job);
         if (job.currentExamIndex >= job.exams.length) {
+            // -------------- FINAL RECOVERY PASS --------------
+            // Before writing files, check whether any exam in this module
+            // still has missing Qns. If so, rebuild job.exams from just
+            // those exams, increment the recovery counter, and revisit
+            // them (with a fresh page load) under the Safe timing preset.
+            // Capped at MAX_FINAL_RECOVERY_ROUNDS — honours the user's
+            // "max 3 attempts per question" contract and prevents
+            // infinite loops on permanently-broken exam pages.
+            const round = job.recoveryRound || 0;
+            if (round < MAX_FINAL_RECOVERY_ROUNDS) {
+                const gapExams = findGapExams(job);
+                if (gapExams.length > 0) {
+                    const totalMissing = gapExams.reduce((s, g) => {
+                        const block = job.data[g.title];
+                        if (!block?.total) return s;
+                        const have = new Set(
+                            (block.questions || [])
+                                .map(q => q.qn)
+                                .filter(n => Number.isInteger(n))
+                        );
+                        let m = 0;
+                        for (let n = 1; n <= block.total; n++) if (!have.has(n)) m++;
+                        return s + m;
+                    }, 0);
+                    log(`advanceToNextExam: final recovery round ${round + 1}/${MAX_FINAL_RECOVERY_ROUNDS} — ` +
+                        `${gapExams.length} exam(s), ${totalMissing} missing Qn(s)`);
+                    showToast(
+                        `🔁 Final recovery ${round + 1}/${MAX_FINAL_RECOVERY_ROUNDS}: ` +
+                        `${totalMissing} missing Qn(s) across ${gapExams.length} exam(s)…`,
+                        'info'
+                    );
+                    job.exams = gapExams;
+                    job.currentExamIndex = 0;
+                    job.recoveryRound = round + 1;
+                    saveJob(job);
+                    // Extra grace period before the revisit — Safe preset
+                    // already gives the page more time, but a longer
+                    // settle between exams helps too.
+                    await sleep(1500);
+                    navigateOrReload(gapExams[0].url);
+                    return;
+                }
+            }
+
             // This module is done. Write its files, then either advance
             // the batch queue (if one is active) or return to where the
             // single-module run started.
@@ -1765,8 +1891,11 @@
             boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
             minWidth: '240px',
         });
+        const title = (job.recoveryRound || 0) > 0
+            ? `🔁 Recovery ${job.recoveryRound}/${MAX_FINAL_RECOVERY_ROUNDS}…`
+            : '📥 Scraping…';
         hud.innerHTML = `
-            <div style="font-weight:700;margin-bottom:6px;">📥 Scraping…</div>
+            <div style="font-weight:700;margin-bottom:6px;">${title}</div>
             <div id="eqe-scraper-hud-progress" style="opacity:0.85;"></div>
             <button id="eqe-scraper-hud-stop" style="
                 margin-top:10px;width:100%;padding:6px;border:none;border-radius:6px;

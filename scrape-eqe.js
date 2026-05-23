@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eqe scraper - e-qe.online Question Bank Exporter
 // @namespace    https://e-qe.online/
-// @version      0.7.3
+// @version      0.7.4
 // @description  Scrape blank questions (no corrections) from a course on e-qe.online and export per-module .txt + .md files. Run on a course page, click "Scrape Course", the script auto-walks every /exam/* page in the course and downloads the result.
 // @match        https://e-qe.online/*
 // @match        https://www.e-qe.online/*
@@ -107,6 +107,11 @@
         outputTxt:       true,
         outputMd:        false,
         withCorrection:  false,                    // include the correction line per question
+        // Format used by the manual "📄 Copy Question" button on /exam/*
+        // pages. Output mirrors the scraper's .txt or .md export of a
+        // single question so it can be pasted into a partial file to
+        // backfill questions PASS 3 couldn't recover.
+        copyFormat:      'txt',                    // 'txt' | 'md'
     };
 
     function loadSettings() {
@@ -116,6 +121,7 @@
             outputTxt:      GM_getValue('scrape_output_txt',     DEFAULT_SETTINGS.outputTxt),
             outputMd:       GM_getValue('scrape_output_md',      DEFAULT_SETTINGS.outputMd),
             withCorrection: GM_getValue('scrape_with_correction', DEFAULT_SETTINGS.withCorrection),
+            copyFormat:     GM_getValue('scrape_copy_format',    DEFAULT_SETTINGS.copyFormat),
         };
         const preset = s.speed === 'custom'
             ? s.custom
@@ -131,6 +137,7 @@
         GM_setValue('scrape_output_txt',      !!s.outputTxt);
         GM_setValue('scrape_output_md',       !!s.outputMd);
         GM_setValue('scrape_with_correction', !!s.withCorrection);
+        GM_setValue('scrape_copy_format',     s.copyFormat === 'md' ? 'md' : 'txt');
         loadSettings();
     }
 
@@ -940,6 +947,93 @@
         return lines.join('\n').replace(/\n{3,}/g, '\n\n');
     }
 
+    // ============================================================================
+    // SINGLE-QUESTION FORMATTER  (manual copy button on /exam/*)
+    // ============================================================================
+    //
+    // Produces output byte-for-byte identical to buildPlainText/buildMarkdown
+    // for one question — so a manually-copied missing Qn can be pasted into
+    // a partial scrape file without a format mismatch. PASS 3 recovers most
+    // gaps; this is the fallback when the user wants to fill the last few
+    // by hand.
+    //
+    // q is the shape returned by getCurrentQuestion():
+    //   { text, props, qn, tag, correction, correctAnswers }
+    function formatSingleQuestion(format, q, examTitle) {
+        const num    = q.qn ?? 1;
+        const suffix = q.tag ? ` - ${q.tag}` : '';
+        const isMd   = format === 'md';
+        const lines  = [];
+
+        // Heading: "# <exam> Q<n> - <tag>" in .txt, "### …" in .md.
+        lines.push(`${isMd ? '###' : '#'} ${examTitle} Q${num}${suffix}`);
+        lines.push('');
+
+        // Question prompt: .txt prefixes the qn ("14. Question text"),
+        // .md leaves the text bare.
+        lines.push(isMd ? q.text : `${num}. ${q.text}`);
+        lines.push('');
+
+        // Propositions A–E. .md inserts a blank line between each prop
+        // (so each renders as its own paragraph); .txt keeps them tight.
+        if (isMd) {
+            q.props.forEach(p => { lines.push(p); lines.push(''); });
+        } else {
+            q.props.forEach(p => lines.push(p));
+            lines.push('');
+        }
+
+        // Correction line — only emitted if the page is in a revealed
+        // state AND the badge isn't "Correction collective" (those exams
+        // don't expose individual answers). Mirrors buildCorrectionLine().
+        const badge       = q.correction || null;
+        const hasAnswers  = Array.isArray(q.correctAnswers) && q.correctAnswers.length;
+        if (!isCollectiveCorrection(badge) && (badge || hasAnswers)) {
+            const ans = hasAnswers ? q.correctAnswers.join(',') : '[pending]';
+            lines.push(`${badge || 'Correction'} - ${examTitle} Q${num} = ${ans}`);
+            if (isMd) lines.push('');
+        }
+
+        return lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+    }
+
+    // Copy the currently-displayed question to the clipboard in the
+    // user's preferred format. No side effects on the page — we just read
+    // whatever's already visible, so the user controls correction state
+    // (click an answer first if you want the "Correction officielle" line
+    // to come along).
+    async function copyCurrentQuestion() {
+        const q = getCurrentQuestion();
+        if (!q) {
+            showToast('No question detected on this page.', 'warning');
+            return;
+        }
+        const examTitle = getExamTitle(location.href);
+        const format    = loadSettings().copyFormat === 'md' ? 'md' : 'txt';
+        const text      = formatSingleQuestion(format, q, examTitle);
+
+        const success = () => showToast(
+            `📄 Copied as .${format} (Q${q.qn ?? '?'})`,
+            'success'
+        );
+        try {
+            await navigator.clipboard.writeText(text);
+            success();
+        } catch {
+            // Older browser / permission denied — fall back to the legacy
+            // textarea-select-copy trick. document.execCommand('copy') is
+            // deprecated but still works in the userscript context.
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch {}
+            ta.remove();
+            success();
+        }
+    }
+
     // Each module gets its own pair of files (.txt / .md), one pair per
     // module per batch. The per-module job is fresh on every course page
     // (see autoStartCourseScrape and startScrapeFromCoursePage), so
@@ -1078,6 +1172,40 @@
         });
         gear.onclick = openSettingsPanel;
         document.body.appendChild(gear);
+    }
+
+    // Manual "copy current question" button injected on /exam/* pages
+    // when no scrape job is active. Pairs with the gear button so the
+    // user can flip .txt ↔ .md without leaving the exam page. The two
+    // buttons sit at the same top:70px row used by every other scraper
+    // UI element, gear on the right edge, copy button just left of it.
+    function injectExamCopyButton() {
+        if (document.getElementById('eqe-scraper-copy-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'eqe-scraper-copy-btn';
+        btn.textContent = '📄 Copy Question';
+        const fmt = (loadSettings().copyFormat === 'md' ? 'md' : 'txt').toUpperCase();
+        btn.title =
+            `Copy this question to clipboard in scraper .${fmt.toLowerCase()} format. ` +
+            `Click an answer + "Réponse" first if you want the correction line. ` +
+            `Open ⚙️ to switch between .txt and .md.`;
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '70px',
+            right: '60px',
+            zIndex: 2000000,
+            padding: '10px 14px',
+            background: 'linear-gradient(135deg,#8b5cf6 0%,#6d28d9 100%)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '10px',
+            cursor: 'pointer',
+            font: '600 13px system-ui,sans-serif',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+        });
+        btn.onclick = copyCurrentQuestion;
+        document.body.appendChild(btn);
     }
 
     function injectStartButton() {
@@ -1260,6 +1388,18 @@
                 </label>
             </div>
 
+            <div style="font-weight:600;margin-bottom:6px;">📄 Copy Question (manual)</div>
+            <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:18px;">
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.copyFormat === 'txt' ? 'rgba(139,92,246,0.18)' : 'transparent'};">
+                    <input type="radio" name="eqe-copyfmt" id="eqe-copyfmt-txt" value="txt" ${s.copyFormat === 'txt' ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">.txt format</div><div style="opacity:0.6;font-size:11px;">Same plain-text layout the scraper writes (<code style="background:#0b1220;padding:1px 4px;border-radius:3px;">#</code> heading, numbered prompt, propositions, correction line). Default — paste straight into a partial .txt export.</div></div>
+                </label>
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer;background:${s.copyFormat === 'md' ? 'rgba(139,92,246,0.18)' : 'transparent'};">
+                    <input type="radio" name="eqe-copyfmt" id="eqe-copyfmt-md" value="md" ${s.copyFormat === 'md' ? 'checked' : ''} style="margin-top:3px;">
+                    <div><div style="font-weight:600;">.md format</div><div style="opacity:0.6;font-size:11px;">Markdown layout (<code style="background:#0b1220;padding:1px 4px;border-radius:3px;">###</code> heading, blank lines between propositions). Matches the .md export.</div></div>
+                </label>
+            </div>
+
             <div style="display:flex;gap:8px;justify-content:flex-end;">
                 <button id="eqe-set-cancel" style="background:transparent;color:#d1d5db;border:1px solid #374151;border-radius:8px;padding:7px 12px;cursor:pointer;font:600 12px system-ui;">Cancel</button>
                 <button id="eqe-set-save"   style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:white;border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font:600 12px system-ui;">Save</button>
@@ -1291,6 +1431,16 @@
             });
         });
 
+        // Repaint the copy-format radios on selection.
+        panel.querySelectorAll('input[name="eqe-copyfmt"]').forEach(r => {
+            r.addEventListener('change', () => {
+                panel.querySelectorAll('input[name="eqe-copyfmt"]').forEach(input => {
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.style.background = input.checked ? 'rgba(139,92,246,0.18)' : 'transparent';
+                });
+            });
+        });
+
         panel.querySelector('#eqe-set-x').onclick      = closeSettingsPanel;
         panel.querySelector('#eqe-set-cancel').onclick = closeSettingsPanel;
         panel.querySelector('#eqe-set-save').onclick   = () => {
@@ -1303,7 +1453,17 @@
             const outputTxt = panel.querySelector('#eqe-set-txt').checked;
             const outputMd  = panel.querySelector('#eqe-set-md').checked;
             const withCorrection = panel.querySelector('#eqe-corr-on').checked;
-            saveSettings({ speed, custom, outputTxt, outputMd, withCorrection });
+            const copyFormat = panel.querySelector('input[name="eqe-copyfmt"]:checked')?.value === 'md' ? 'md' : 'txt';
+            saveSettings({ speed, custom, outputTxt, outputMd, withCorrection, copyFormat });
+            // Refresh the exam-page copy button's tooltip so the new
+            // format is reflected without a page reload.
+            const copyBtn = document.getElementById('eqe-scraper-copy-btn');
+            if (copyBtn) {
+                copyBtn.title =
+                    `Copy this question to clipboard in scraper .${copyFormat} format. ` +
+                    `Click an answer + "Réponse" first if you want the correction line. ` +
+                    `Open ⚙️ to switch between .txt and .md.`;
+            }
             showToast('Settings saved.', 'success');
             closeSettingsPanel();
         };
@@ -2051,8 +2211,17 @@
             return;
         }
 
-        if (isExamPage() && job?.active) {
-            runExamScrape();
+        if (isExamPage()) {
+            if (job?.active) {
+                runExamScrape();
+                return;
+            }
+            // No active scrape — surface the manual copy + settings on
+            // every /exam/* page so the user can fill PASS-3-unrecoverable
+            // gaps by hand. Hidden while a scrape is in progress to keep
+            // the HUD area clean.
+            injectExamCopyButton();
+            injectGearButton();
             return;
         }
     }
@@ -2066,6 +2235,7 @@
             document.getElementById('eqe-scraper-btn')?.remove();
             document.getElementById('eqe-scraper-batch-btn')?.remove();
             document.getElementById('eqe-scraper-gear-btn')?.remove();
+            document.getElementById('eqe-scraper-copy-btn')?.remove();
             document.getElementById('eqe-scraper-hud')?.remove();
             document.getElementById('eqe-scraper-settings-overlay')?.remove();
             setTimeout(init, 300);

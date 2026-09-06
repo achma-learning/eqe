@@ -1,0 +1,873 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banque de Questions Hors-ligne — EQE</title>
+<style>
+:root{
+  --bg:#f5f7fa; --panel:#ffffff; --panel-2:#f0f2f6; --text:#1c2230; --muted:#5b6474;
+  --border:#e2e6ee; --accent:#2f6fed; --accent-2:#1c4fb0; --good:#1a9e5c; --good-bg:#e4f8ee;
+  --bad:#d1403a; --bad-bg:#fce9e8; --warn:#b7791f; --warn-bg:#fdf3dd; --shadow:0 1px 3px rgba(20,30,60,.08);
+  --heat-0:#e9edf5; --heat-1:#c7e4d4; --heat-2:#8fd0ab; --heat-3:#43ab74; --heat-4:#1a7a4b;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#12151c; --panel:#1a1e28; --panel-2:#20242f; --text:#e7eaf1; --muted:#9aa3b5;
+    --border:#2a2f3c; --accent:#5b8dfb; --accent-2:#8fb0ff; --good:#3ecb85; --good-bg:#123322;
+    --bad:#ff6b64; --bad-bg:#3a1917; --warn:#e8b34a; --warn-bg:#3a2f10; --shadow:0 1px 3px rgba(0,0,0,.4);
+    --heat-0:#232838; --heat-1:#123322; --heat-2:#175c39; --heat-3:#1f8a52; --heat-4:#2fbf71;
+  }
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+body{padding-bottom:60px;}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px;}
+a{color:var(--accent);}
+button{font-family:inherit;}
+h1,h2,h3{margin:0 0 8px;}
+.topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border);padding:10px 0;}
+.topbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.brand{font-weight:800;font-size:16px;display:flex;align-items:center;gap:8px;}
+.brand small{font-weight:500;color:var(--muted);}
+.iconbtn{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;color:var(--text);font-size:14px;box-shadow:var(--shadow);}
+.iconbtn:hover{border-color:var(--accent);}
+.streak{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin:16px 0;box-shadow:var(--shadow);}
+.card h2{font-size:15px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);}
+.grid{display:grid;gap:12px;}
+.grid.cols-2{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
+.grid.cols-3{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+.today-card{display:flex;flex-wrap:wrap;align-items:center;gap:18px;justify-content:space-between;}
+.today-left{display:flex;align-items:center;gap:16px;}
+.today-badge{width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;}
+.today-title{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:2px;}
+.today-module{font-size:20px;font-weight:800;}
+.today-sub{font-size:13px;color:var(--muted);margin-top:2px;}
+.btn{display:inline-flex;align-items:center;gap:6px;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:12px 20px;font-size:15px;font-weight:700;cursor:pointer;}
+.btn:hover{background:var(--accent-2);}
+.btn.secondary{background:var(--panel-2);color:var(--text);border:1px solid var(--border);}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--border);}
+.btn.danger{background:var(--bad);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.progress-ring-wrap{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);}
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--panel-2);color:var(--muted);}
+.pill.good{background:var(--good-bg);color:var(--good);}
+.pill.bad{background:var(--bad-bg);color:var(--bad);}
+.pill.warn{background:var(--warn-bg);color:var(--warn);}
+.module-card{background:var(--panel-2);border:1px solid var(--border);border-radius:12px;padding:14px;cursor:pointer;transition:transform .1s;}
+.module-card:hover{border-color:var(--accent);}
+.module-card .mname{font-weight:700;font-size:14px;margin-bottom:6px;}
+.module-card .mstats{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;margin-bottom:8px;}
+.bar{height:6px;background:var(--border);border-radius:4px;overflow:hidden;}
+.bar > span{display:block;height:100%;background:var(--accent);}
+.bar.acc > span{background:var(--good);}
+.selected-focus{outline:2px solid var(--accent);}
+.heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:3px;overflow-x:auto;padding-bottom:6px;}
+.heat-cell{width:11px;height:11px;border-radius:3px;background:var(--heat-0);}
+.heat-legend{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-top:6px;}
+.heat-legend .heat-cell{width:10px;height:10px;}
+table.report{width:100%;border-collapse:collapse;font-size:13px;}
+table.report th, table.report td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);}
+table.report th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
+.mheat-row{display:grid;grid-template-columns:150px 1fr;align-items:center;gap:8px;margin-bottom:4px;}
+.mheat-name{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.mheat-cells{display:flex;gap:3px;}
+.mheat-cell{flex:1;height:20px;border-radius:4px;background:var(--heat-0);}
+.modal-overlay{position:fixed;inset:0;background:rgba(10,14,22,.5);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:100;overflow-y:auto;}
+.modal{background:var(--panel);border-radius:14px;max-width:520px;width:100%;padding:22px;box-shadow:0 10px 40px rgba(0,0,0,.3);}
+.modal h3{margin-top:0;}
+.field{margin-bottom:16px;}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px;}
+.field input[type=date], .field select{width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:14px;}
+.radio-row{display:flex;gap:16px;margin-bottom:6px;}
+.radio-row label{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:500;}
+.checklist{max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;}
+.checklist label{display:flex;align-items:center;gap:8px;padding:5px 4px;font-size:13px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;}
+.hidden{display:none !important;}
+.exam-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px;}
+.exam-progress-bar{height:8px;background:var(--border);border-radius:5px;overflow:hidden;margin-bottom:20px;}
+.exam-progress-bar > span{display:block;height:100%;background:var(--accent);transition:width .2s;}
+.qtext{font-size:18px;line-height:1.5;font-weight:600;margin-bottom:20px;white-space:pre-wrap;}
+.options{display:flex;flex-direction:column;gap:10px;margin-bottom:22px;}
+.option{display:flex;align-items:center;gap:12px;background:var(--panel-2);border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;text-align:left;font-size:15px;color:var(--text);}
+.option:hover{border-color:var(--accent);}
+.option.selected{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 12%, var(--panel-2));}
+.option .letter{width:26px;height:26px;border-radius:8px;background:var(--panel);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;}
+.option.selected .letter{background:var(--accent);color:#fff;border-color:var(--accent);}
+.grade-row{display:flex;gap:12px;flex-wrap:wrap;}
+.grade-row .btn{flex:1;min-width:160px;justify-content:center;}
+.broken-note{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:14px;font-size:14px;margin-bottom:18px;}
+.exam-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:10px;}
+.kbd{display:inline-block;font-family:ui-monospace,monospace;background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-size:11px;}
+.summary-stat{text-align:center;}
+.summary-stat .num{font-size:30px;font-weight:800;}
+.summary-stat .lbl{font-size:12px;color:var(--muted);text-transform:uppercase;}
+.small-muted{font-size:12px;color:var(--muted);}
+.link-quiet{color:var(--muted);text-decoration:none;font-size:12px;}
+.link-quiet:hover{color:var(--accent);}
+.integrity-list{max-height:220px;overflow-y:auto;font-size:13px;}
+.integrity-list li{margin-bottom:6px;}
+.top-nav-actions{display:flex;gap:8px;}
+.exam-list-item{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer;background:var(--panel-2);}
+.exam-list-item:hover{border-color:var(--accent);}
+.breadcrumb{font-size:13px;color:var(--muted);margin-bottom:10px;}
+.breadcrumb a{cursor:pointer;text-decoration:none;}
+.breadcrumb a:hover{text-decoration:underline;}
+footer.app-footer{max-width:1080px;margin:30px auto 0;padding:0 16px;font-size:12px;color:var(--muted);text-align:center;}
+@media print {
+  .topbar, .btn, .iconbtn, #view-practice, #view-setup-banner {display:none !important;}
+  body{padding-bottom:0;}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <div class="brand">📚 Banque EQE <small>hors-ligne</small></div>
+    <div class="top-nav-actions">
+      <span class="streak" id="streak-display"></span>
+      <button class="iconbtn" id="btn-home" title="Tableau de bord">🏠</button>
+      <button class="iconbtn" id="btn-settings" title="Réglages">⚙️</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap" id="app-root">
+  <!-- rendered by JS -->
+</div>
+
+<footer class="app-footer">
+  Fonctionne 100% hors-ligne · vos données restent dans ce navigateur (localStorage) · généré le {{GENERATED_AT}} · <a href="data.html">Ressources externes</a>
+</footer>
+
+<script id="qb-data" type="application/json">{{DATA_JSON}}</script>
+<script>
+(function(){
+'use strict';
+
+/* ============================== DATA ============================== */
+const DATA = JSON.parse(document.getElementById('qb-data').textContent);
+const MODULES = DATA.modules;
+const ISSUES = DATA.issues || [];
+
+const moduleById = new Map();
+const examById = new Map();
+const questionById = new Map();
+const examToModule = new Map();
+for (const m of MODULES) {
+  moduleById.set(m.id, m);
+  for (const e of m.exams) {
+    examById.set(e.id, e);
+    examToModule.set(e.id, m.id);
+    for (const q of e.questions) questionById.set(q.id, q);
+  }
+}
+function moduleQuestionCount(m, includeBroken){
+  let n = 0;
+  for (const e of m.exams) for (const q of e.questions) if (includeBroken || !q.broken) n++;
+  return n;
+}
+function moduleIdForQuestion(qid){
+  const examId = qid.slice(0, qid.lastIndexOf('-q'));
+  return examToModule.get(examId);
+}
+
+/* ============================== STORAGE ============================== */
+const LS_KEYS = {
+  settings: 'qb.settings.v1',
+  progress: 'qb.progress.v1',
+  daily: 'qb.daily.v1',
+};
+function loadJSON(key, fallback){
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
+  catch(e){ return fallback; }
+}
+function saveJSON(key, val){
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){ /* storage full/unavailable */ }
+}
+let settings = loadJSON(LS_KEYS.settings, null);
+let progress = loadJSON(LS_KEYS.progress, {});   // qid -> {status:'correct'|'wrong', lastSeen, timesSeen}
+let daily = loadJSON(LS_KEYS.daily, {});         // 'YYYY-MM-DD' -> {answered:n, examsCompleted:[examId]}
+
+function todayStr(d){ d = d || new Date(); return d.toISOString().slice(0,10); }
+function epochDays(dateStr){ return Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 86400000); }
+function addDays(dateStr, n){ const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return todayStr(d); }
+
+if (!settings) {
+  settings = {
+    mode: 'semester',
+    startDate: todayStr(),
+    examDate: addDays(todayStr(), 90),
+    focusModules: [],
+  };
+  saveJSON(LS_KEYS.settings, settings);
+}
+
+function persistProgress(){ saveJSON(LS_KEYS.progress, progress); }
+function persistDaily(){ saveJSON(LS_KEYS.daily, daily); }
+function persistSettings(){ saveJSON(LS_KEYS.settings, settings); }
+
+function recordAnswer(qid, status){
+  const now = new Date().toISOString();
+  const prev = progress[qid];
+  progress[qid] = { status, lastSeen: now, timesSeen: (prev ? prev.timesSeen : 0) + 1 };
+  persistProgress();
+  const t = todayStr();
+  if (!daily[t]) daily[t] = { answered: 0, examsCompleted: [] };
+  daily[t].answered += 1;
+  persistDaily();
+}
+function recordExamCompleted(examId){
+  const t = todayStr();
+  if (!daily[t]) daily[t] = { answered: 0, examsCompleted: [] };
+  if (!daily[t].examsCompleted.includes(examId)) daily[t].examsCompleted.push(examId);
+  persistDaily();
+}
+
+/* ============================== STATS ============================== */
+function moduleStats(moduleId){
+  const m = moduleById.get(moduleId);
+  let total = 0, attempted = 0, correct = 0, wrong = 0, lastStudied = null;
+  for (const e of m.exams) for (const q of e.questions) {
+    if (q.broken) continue;
+    total++;
+    const p = progress[q.id];
+    if (p) {
+      attempted++;
+      if (p.status === 'correct') correct++; else wrong++;
+      if (!lastStudied || p.lastSeen > lastStudied) lastStudied = p.lastSeen;
+    }
+  }
+  const accuracy = attempted ? Math.round((correct/attempted)*100) : null;
+  return { total, attempted, correct, wrong, accuracy, lastStudied };
+}
+function overallStreak(){
+  let streak = 0;
+  let d = todayStr();
+  if (!(daily[d] && daily[d].answered > 0)) {
+    d = addDays(d, -1);
+  }
+  while (daily[d] && daily[d].answered > 0) {
+    streak++;
+    d = addDays(d, -1);
+  }
+  return streak;
+}
+
+/* ============================== SCHEDULER ============================== */
+// Smooth weighted round-robin (as used by load balancers): distributes days
+// across modules proportionally to their remaining question count, while
+// interleaving instead of running one module for many days in a row.
+function buildRotation(items, days){
+  if (!items.length) return [];
+  const state = items.map(it => ({ id: it.id, weight: Math.max(it.weight, 1), current: 0 }));
+  const totalWeight = state.reduce((s,i)=>s+i.weight,0);
+  const seq = [];
+  for (let d = 0; d < days; d++) {
+    state.forEach(s => s.current += s.weight);
+    let best = state[0];
+    for (const s of state) if (s.current > best.current) best = s;
+    best.current -= totalWeight;
+    seq.push(best.id);
+  }
+  return seq;
+}
+function pickWeakestModule(candidateIds){
+  let worst = null, worstScore = Infinity;
+  for (const id of candidateIds) {
+    const st = moduleStats(id);
+    const remaining = st.total - st.attempted;
+    // score: prioritize low accuracy, then modules with untouched material
+    const score = (st.accuracy == null ? 40 : st.accuracy) - Math.min(remaining, 30);
+    if (score < worstScore) { worstScore = score; worst = id; }
+  }
+  return worst;
+}
+function todaysModuleId(){
+  const t = todayStr();
+  if (settings.mode === 'focus' && settings.focusModules.length) {
+    const items = settings.focusModules
+      .filter(id => moduleById.has(id))
+      .map(id => ({ id, weight: moduleQuestionCount(moduleById.get(id), false) }));
+    if (!items.length) return null;
+    const seq = buildRotation(items, 30);
+    const idx = ((epochDays(t) % 30) + 30) % 30;
+    return seq[idx];
+  }
+  // semester mode
+  const start = settings.startDate, end = settings.examDate;
+  const totalDays = Math.max(1, Math.min(400, epochDays(end) - epochDays(start) + 1));
+  if (epochDays(t) > epochDays(end)) {
+    // past exam date: switch to spaced review of weakest modules
+    return pickWeakestModule(MODULES.map(m=>m.id));
+  }
+  const items = MODULES.map(m => ({ id: m.id, weight: moduleQuestionCount(m, false) }));
+  const seq = buildRotation(items, totalDays);
+  const idx = Math.min(Math.max(epochDays(t) - epochDays(start), 0), seq.length-1);
+  return seq[idx] || items[0].id;
+}
+function suggestExamForModule(moduleId){
+  const m = moduleById.get(moduleId);
+  if (!m) return null;
+  // Prefer an exam that hasn't been touched yet; else the least-recently-studied one.
+  let best = null, bestScore = -Infinity;
+  for (const e of m.exams) {
+    const qs = e.questions.filter(q => !q.broken);
+    if (!qs.length) continue;
+    let attempted = 0, lastSeen = '';
+    for (const q of qs) { const p = progress[q.id]; if (p) { attempted++; if (p.lastSeen > lastSeen) lastSeen = p.lastSeen; } }
+    const untouchedRatio = 1 - (attempted / qs.length);
+    const staleness = lastSeen ? (Date.now() - new Date(lastSeen).getTime()) : Infinity;
+    const score = untouchedRatio * 1000 + Math.min(staleness / 3600000, 500);
+    if (score > bestScore) { bestScore = score; best = e; }
+  }
+  return best;
+}
+
+/* ============================== ROUTING / RENDER ============================== */
+const root = document.getElementById('app-root');
+let route = { view: 'dashboard' };
+
+function go(newRoute){ route = newRoute; render(); window.scrollTo(0,0); }
+
+document.getElementById('btn-home').addEventListener('click', () => go({ view:'dashboard' }));
+document.getElementById('btn-settings').addEventListener('click', () => openSettingsModal());
+
+function el(tag, attrs, children){
+  const e = document.createElement(tag);
+  attrs = attrs || {};
+  for (const k in attrs) {
+    if (k === 'class') e.className = attrs[k];
+    else if (k === 'html') e.innerHTML = attrs[k];
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
+  }
+  (children||[]).forEach(c => { if (c != null) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+  return e;
+}
+function fmtDate(iso){
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('fr-FR', { day:'2-digit', month:'short' });
+}
+
+/* ============================== DASHBOARD ============================== */
+function renderDashboard(){
+  root.innerHTML = '';
+  updateStreakDisplay();
+
+  const todayMod = todaysModuleId();
+  const isReview = settings.mode === 'semester' && todayStr() > settings.examDate;
+  const suggestedExam = todayMod ? suggestExamForModule(todayMod) : null;
+  const t = todayStr();
+  const examsToday = (daily[t] && daily[t].examsCompleted.length) || 0;
+
+  // Today card
+  const todayCard = el('div', { class:'card today-card' }, [
+    el('div', { class:'today-left' }, [
+      el('div', { class:'today-badge' }, ['🎯']),
+      el('div', {}, [
+        el('div', { class:'today-title' }, [isReview ? 'Révision (post-examen)' : (settings.mode === 'focus' ? 'Module du jour · Focus' : 'Module du jour')]),
+        el('div', { class:'today-module' }, [todayMod ? moduleById.get(todayMod).name : 'Choisissez un module']),
+        el('div', { class:'today-sub' }, [
+          `Objectif du jour : au moins 1 examen complet · ${examsToday}/1 ${examsToday>=1 ? '✅' : ''}`
+        ]),
+      ]),
+    ]),
+    el('div', {}, [
+      el('button', { class:'btn', onclick: () => {
+        if (suggestedExam) startExam(suggestedExam.id);
+      }}, [suggestedExam ? `Commencer : ${suggestedExam.name}` : 'Choisir un module ci-dessous']),
+    ]),
+  ]);
+  root.appendChild(todayCard);
+
+  if (!loadJSON('qb.setupSeen.v1', false)) {
+    root.appendChild(el('div', { class:'card', id:'view-setup-banner' }, [
+      el('h2', {}, ['Bienvenue']),
+      el('p', {}, ['Cette banque fonctionne 100% hors-ligne. Réglez votre date d’examen (ou choisissez un mode "focus" sur 1-2 modules) dans ⚙️ Réglages — ou commencez tout de suite, les valeurs par défaut conviennent.']),
+      el('button', { class:'btn secondary', onclick: (ev) => { saveJSON('qb.setupSeen.v1', true); ev.target.closest('.card').remove(); } }, ['Compris, ne plus afficher']),
+    ]));
+  }
+
+  // Module picker
+  const modGrid = el('div', { class:'grid cols-3' });
+  for (const m of MODULES) {
+    const st = moduleStats(m.id);
+    const pct = st.total ? Math.round((st.attempted/st.total)*100) : 0;
+    const accColor = st.accuracy == null ? 'var(--muted)' : st.accuracy >= 70 ? 'var(--good)' : st.accuracy >= 45 ? 'var(--warn)' : 'var(--bad)';
+    const card = el('div', { class:'module-card' + (m.id === todayMod ? ' selected-focus' : ''), onclick: () => go({ view:'module', moduleId: m.id }) }, [
+      el('div', { class:'mname' }, [m.name]),
+      el('div', { class:'mstats' }, [`${st.attempted}/${st.total} vues`, st.accuracy != null ? el('span',{style:`color:${accColor};font-weight:700`},[st.accuracy+'%']) : el('span',{},['—'])]),
+      el('div', { class:'bar' }, [el('span', { style:`width:${pct}%` })]),
+    ]);
+    modGrid.appendChild(card);
+  }
+  root.appendChild(el('div', { class:'card' }, [
+    el('h2', {}, ['Modules']),
+    modGrid,
+  ]));
+
+  // Activity heatmap
+  root.appendChild(buildActivityHeatmapCard());
+
+  // Module x week heatmap
+  root.appendChild(buildModuleHeatmapCard());
+
+  // Report
+  root.appendChild(buildReportCard());
+
+  if (ISSUES.length) {
+    root.appendChild(buildIntegrityCard());
+  }
+}
+
+function updateStreakDisplay(){
+  const s = overallStreak();
+  document.getElementById('streak-display').textContent = s > 0 ? `🔥 ${s} j` : '';
+}
+
+/* ============================== HEATMAPS ============================== */
+function buildActivityHeatmapCard(){
+  const days = 182;
+  const end = todayStr();
+  const start = addDays(end, -(days-1));
+  // pad to start on a Monday-aligned column grid (7 rows)
+  const startDow = (new Date(start+'T00:00:00Z').getUTCDay()+6)%7; // 0=Mon
+  const cells = [];
+  for (let i=0;i<startDow;i++) cells.push(null);
+  for (let i=0;i<days;i++){
+    const d = addDays(start, i);
+    cells.push({ date: d, count: (daily[d] && daily[d].answered) || 0 });
+  }
+  const grid = el('div', { class:'heat-grid' });
+  for (const c of cells) {
+    if (!c) { grid.appendChild(el('div', { class:'heat-cell', style:'background:transparent' })); continue; }
+    const level = c.count === 0 ? 0 : c.count < 5 ? 1 : c.count < 15 ? 2 : c.count < 30 ? 3 : 4;
+    const cell = el('div', { class:'heat-cell', style:`background:var(--heat-${level})`, title:`${c.date} · ${c.count} question(s)` });
+    grid.appendChild(cell);
+  }
+  const legend = el('div', { class:'heat-legend' }, [
+    'Moins',
+    el('div', { class:'heat-cell', style:'background:var(--heat-0)' }),
+    el('div', { class:'heat-cell', style:'background:var(--heat-1)' }),
+    el('div', { class:'heat-cell', style:'background:var(--heat-2)' }),
+    el('div', { class:'heat-cell', style:'background:var(--heat-3)' }),
+    el('div', { class:'heat-cell', style:'background:var(--heat-4)' }),
+    'Plus',
+  ]);
+  return el('div', { class:'card' }, [
+    el('h2', {}, ['Activité (6 derniers mois)']),
+    grid,
+    legend,
+  ]);
+}
+
+function buildModuleHeatmapCard(){
+  const weeks = 8;
+  const wrap = el('div', {});
+  const header = el('div', { class:'mheat-row' }, [el('div',{class:'mheat-name'},['']), el('div',{class:'mheat-cells'},
+    Array.from({length:weeks}, (_,i) => el('div', { class:'small-muted', style:'flex:1;text-align:center' }, [`S-${weeks-1-i}`]))
+  )]);
+  wrap.appendChild(header);
+  for (const m of MODULES) {
+    const cells = [];
+    for (let w = weeks-1; w >= 0; w--) {
+      const wEnd = addDays(todayStr(), -7*w);
+      const wStart = addDays(wEnd, -6);
+      let count = 0;
+      for (const [qid, p] of Object.entries(progress)) {
+        if (moduleIdForQuestion(qid) !== m.id) continue;
+        const d = p.lastSeen.slice(0,10);
+        if (d >= wStart && d <= wEnd) count++;
+      }
+      cells.push(count);
+    }
+    const max = Math.max(1, ...cells);
+    const row = el('div', { class:'mheat-row' }, [
+      el('div', { class:'mheat-name' }, [m.name]),
+      el('div', { class:'mheat-cells' }, cells.map(c => {
+        const level = c === 0 ? 0 : Math.min(4, Math.ceil((c/max)*4));
+        return el('div', { class:'mheat-cell', style:`background:var(--heat-${level})`, title:`${c} question(s)` });
+      })),
+    ]);
+    wrap.appendChild(row);
+  }
+  return el('div', { class:'card' }, [
+    el('h2', {}, ['Intensité de révision par module (8 dernières semaines)']),
+    wrap,
+  ]);
+}
+
+/* ============================== REPORT ============================== */
+function computeGlobalReport(){
+  const rows = MODULES.map(m => ({ module: m, stats: moduleStats(m.id) }));
+  const totalAttempted = rows.reduce((s,r)=>s+r.stats.attempted,0);
+  const totalCorrect = rows.reduce((s,r)=>s+r.stats.correct,0);
+  const totalAvailable = rows.reduce((s,r)=>s+r.stats.total,0);
+  return { rows, totalAttempted, totalCorrect, totalAvailable };
+}
+function buildReportCard(){
+  const { rows, totalAttempted, totalCorrect, totalAvailable } = computeGlobalReport();
+  const globalAcc = totalAttempted ? Math.round((totalCorrect/totalAttempted)*100) : null;
+
+  const summary = el('div', { class:'grid cols-3', style:'margin-bottom:16px' }, [
+    el('div', { class:'summary-stat' }, [el('div',{class:'num'},[String(totalAttempted)]), el('div',{class:'lbl'},['Questions vues'])]),
+    el('div', { class:'summary-stat' }, [el('div',{class:'num'},[totalAvailable ? Math.round((totalAttempted/totalAvailable)*100)+'%' : '0%']), el('div',{class:'lbl'},['Couverture'])]),
+    el('div', { class:'summary-stat' }, [el('div',{class:'num'},[globalAcc==null?'—':globalAcc+'%']), el('div',{class:'lbl'},['Auto-évaluation'])]),
+  ]);
+
+  const table = el('table', { class:'report' });
+  table.appendChild(el('thead', {}, [el('tr', {}, [
+    el('th',{},['Module']), el('th',{},['Vues']), el('th',{},['Précision']), el('th',{},['Dernière étude']),
+  ])]));
+  const tbody = el('tbody');
+  for (const r of rows) {
+    const acc = r.stats.accuracy;
+    const pill = acc == null ? el('span',{class:'pill'},['—']) : el('span',{class:'pill '+(acc>=70?'good':acc>=45?'warn':'bad')},[acc+'%']);
+    tbody.appendChild(el('tr', {}, [
+      el('td',{},[r.module.name]),
+      el('td',{},[`${r.stats.attempted}/${r.stats.total}`]),
+      el('td',{},[pill]),
+      el('td',{},[fmtDate(r.stats.lastStudied)]),
+    ]));
+  }
+  table.appendChild(tbody);
+
+  const actions = el('div', { style:'display:flex;gap:10px;margin-top:14px;flex-wrap:wrap' }, [
+    el('button', { class:'btn secondary', onclick: exportCSV }, ['⬇️ Exporter en CSV']),
+    el('button', { class:'btn secondary', onclick: () => window.print() }, ['🖨️ Imprimer / PDF']),
+  ]);
+
+  return el('div', { class:'card' }, [
+    el('h2', {}, ['Rapport']),
+    summary,
+    table,
+    actions,
+  ]);
+}
+function exportCSV(){
+  const { rows } = computeGlobalReport();
+  let csv = 'Module,Questions vues,Total disponible,Precision (%),Derniere etude\\n';
+  for (const r of rows) {
+    csv += [r.module.name, r.stats.attempted, r.stats.total, r.stats.accuracy==null?'':r.stats.accuracy, r.stats.lastStudied||''].map(v => `"${String(v).replace(/"/g,'""')}"`).join(',') + '\\n';
+  }
+  csv += '\\nJournal quotidien\\nDate,Questions repondues,Examens termines\\n';
+  const dates = Object.keys(daily).sort();
+  for (const d of dates) csv += `${d},${daily[d].answered},${daily[d].examsCompleted.length}\\n`;
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `rapport-eqe-${todayStr()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function buildIntegrityCard(){
+  const broken = ISSUES.filter(i => i.type === 'broken-capture');
+  const thin = ISSUES.filter(i => i.type === 'thin-exam');
+  const totalBroken = broken.reduce((s,i)=>s+i.questions.length,0);
+
+  const card = el('div', { class:'card' }, [el('h2', {}, ['⚠️ Qualité des données'])]);
+
+  if (thin.length) {
+    const list = el('ul', { class:'integrity-list' });
+    for (const i of thin.slice(0, 80)) {
+      list.appendChild(el('li', {}, [
+        `${i.module} — ${i.exam} : seulement ${i.parsed} question(s) capturée(s) `,
+        el('a', { href:i.url, target:'_blank', rel:'noopener' }, ['re-scraper sur e-qe.online ↗']),
+      ]));
+    }
+    card.appendChild(el('p', {}, [
+      el('strong', {}, [`${thin.length} examen(s) sont largement incomplets`]),
+      ' (le scraping s’est arrêté après 1-2 questions au lieu de ~50). Ils sont utilisables mais pauvres en contenu — relancez le scraper (', el('code',{},['scrape-eqe.js']), ') sur ces examens pour compléter la banque.',
+    ]));
+    card.appendChild(el('details', {}, [el('summary', { style:'cursor:pointer' }, [`Voir la liste (${thin.length})`]), list]));
+  }
+
+  if (broken.length) {
+    const list2 = el('ul', { class:'integrity-list' });
+    for (const i of broken.slice(0, 60)) {
+      list2.appendChild(el('li', {}, [
+        `${i.module} — ${i.exam} : Q${i.questions.join(', Q')} `,
+        el('a', { href:i.url, target:'_blank', rel:'noopener' }, ['voir sur e-qe.online ↗']),
+      ]));
+    }
+    card.appendChild(el('p', { style: thin.length ? 'margin-top:16px' : '' }, [`${totalBroken} question(s) additionnelle(s) n'ont pas été capturées correctement (texte manquant, généralement "Loading..."). Elles sont automatiquement ignorées pendant l'entraînement.`]));
+    card.appendChild(el('details', {}, [el('summary', { style:'cursor:pointer' }, [`Voir le détail (${broken.length} examens concernés)`]), list2]));
+  }
+
+  return card;
+}
+
+/* ============================== SETTINGS MODAL ============================== */
+function openSettingsModal(){
+  const overlay = el('div', { class:'modal-overlay', onclick: (ev) => { if (ev.target === overlay) overlay.remove(); } });
+  const modal = el('div', { class:'modal' });
+
+  const modeSelect = el('div', { class:'field' }, [
+    el('label', {}, ['Mode de préparation']),
+    el('div', { class:'radio-row' }, [
+      el('label', {}, [ (()=>{const r=el('input',{type:'radio',name:'mode',value:'semester'}); r.checked = settings.mode==='semester'; return r;})(), 'Semestre complet' ]),
+      el('label', {}, [ (()=>{const r=el('input',{type:'radio',name:'mode',value:'focus'}); r.checked = settings.mode==='focus'; return r;})(), 'Focus (modules choisis)' ]),
+    ]),
+  ]);
+
+  const dateField = el('div', { class:'field' }, [
+    el('label', {}, ['Date de l’examen']),
+    (() => { const i = el('input', { type:'date', id:'set-examdate' }); i.value = settings.examDate; return i; })(),
+  ]);
+
+  const checklist = el('div', { class:'checklist' });
+  for (const m of MODULES) {
+    const cb = el('input', { type:'checkbox', value:m.id });
+    cb.checked = settings.focusModules.includes(m.id);
+    checklist.appendChild(el('label', {}, [cb, m.name]));
+  }
+  const focusField = el('div', { class:'field' }, [
+    el('label', {}, ['Modules à privilégier']),
+    checklist,
+  ]);
+
+  const dangerBtn = el('button', { class:'btn danger', onclick: () => {
+    if (confirm('Effacer toute votre progression et vos statistiques ? Cette action est irréversible.')) {
+      progress = {}; daily = {}; persistProgress(); persistDaily();
+      overlay.remove(); render();
+    }
+  }}, ['Réinitialiser ma progression']);
+
+  const saveBtn = el('button', { class:'btn', onclick: () => {
+    const mode = modal.querySelector('input[name=mode]:checked').value;
+    const examDate = modal.querySelector('#set-examdate').value || settings.examDate;
+    const focusModules = Array.from(checklist.querySelectorAll('input:checked')).map(i=>i.value);
+    settings.mode = mode;
+    settings.examDate = examDate;
+    settings.focusModules = focusModules;
+    persistSettings();
+    overlay.remove();
+    render();
+  }}, ['Enregistrer']);
+
+  modal.appendChild(el('h3', {}, ['Réglages']));
+  modal.appendChild(modeSelect);
+  modal.appendChild(dateField);
+  modal.appendChild(focusField);
+  modal.appendChild(el('div', { class:'modal-actions' }, [dangerBtn, el('button',{class:'btn secondary', onclick:()=>overlay.remove()},['Annuler']), saveBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+/* ============================== MODULE VIEW ============================== */
+function renderModuleView(moduleId){
+  const m = moduleById.get(moduleId);
+  root.innerHTML = '';
+  root.appendChild(el('div', { class:'breadcrumb' }, [
+    el('a', { onclick: () => go({view:'dashboard'}) }, ['Tableau de bord']), ' / ', m.name,
+  ]));
+  const st = moduleStats(moduleId);
+  root.appendChild(el('div', { class:'card' }, [
+    el('h2', {}, [m.name]),
+    el('p', { class:'small-muted' }, [`${st.attempted}/${st.total} questions vues · ${st.accuracy==null?'pas encore de données':st.accuracy+'% de précision'}`]),
+  ]));
+
+  const list = el('div', {});
+  for (const e of m.exams) {
+    const qs = e.questions.filter(q=>!q.broken);
+    let attempted = 0;
+    for (const q of qs) if (progress[q.id]) attempted++;
+    const isThin = e.questions.length <= 2;
+    const item = el('div', { class:'exam-list-item', onclick: () => startExam(e.id) }, [
+      el('div', {}, [
+        el('div', { style:'font-weight:700' }, [e.name]),
+        el('div', { class:'small-muted' }, [`${qs.length} question(s)${e.questions.length!==qs.length ? ' · '+(e.questions.length-qs.length)+' non capturée(s)' : ''}`]),
+      ]),
+      el('div', {}, [
+        isThin ? el('span', { class:'pill warn', style:'margin-right:6px' }, ['incomplet']) : null,
+        el('span', { class:'pill' + (attempted===qs.length && qs.length ? ' good' : '') }, [`${attempted}/${qs.length}`]),
+      ]),
+    ]);
+    list.appendChild(item);
+  }
+  root.appendChild(el('div', { class:'card' }, [el('h2', {}, ['Examens']), list]));
+}
+
+/* ============================== PRACTICE / EXAM VIEW ============================== */
+let examState = null; // { exam, moduleId, order:[qids], idx, selected:Set, phase:'answer'|'grade', results:{qid:'correct'|'wrong'|'skipped'}, startedAt }
+
+function startExam(examId){
+  const exam = examById.get(examId);
+  const moduleId = examToModule.get(examId);
+  const order = exam.questions.filter(q=>!q.broken).map(q=>q.id);
+  if (!order.length) { alert('Cet examen ne contient aucune question exploitable.'); return; }
+  examState = { exam, moduleId, order, idx:0, selected:new Set(), phase:'answer', results:{}, startedAt:Date.now() };
+  go({ view:'exam' });
+}
+
+function renderExamView(){
+  root.innerHTML = '';
+  const st = examState;
+  const qid = st.order[st.idx];
+  const q = questionById.get(qid);
+  const m = moduleById.get(st.moduleId);
+
+  root.appendChild(el('div', { class:'breadcrumb' }, [
+    el('a', { onclick: () => { if (confirm('Quitter cet examen ? Votre progression déjà validée est conservée.')) go({view:'module', moduleId:st.moduleId}); } }, ['Tableau de bord']),
+    ' / ', m.name, ' / ', st.exam.name,
+  ]));
+
+  const card = el('div', { class:'card', id:'view-practice' });
+  card.appendChild(el('div', { class:'exam-header' }, [
+    el('div', { class:'small-muted' }, [`Question ${st.idx+1} / ${st.order.length}`]),
+    el('a', { href: st.exam.url, target:'_blank', rel:'noopener', class:'link-quiet' }, ['Voir sur e-qe.online ↗']),
+  ]));
+  card.appendChild(el('div', { class:'exam-progress-bar' }, [el('span', { style:`width:${((st.idx)/st.order.length)*100}%` })]));
+
+  card.appendChild(el('div', { class:'qtext' }, [q.text]));
+
+  const optsWrap = el('div', { class:'options' });
+  q.options.forEach((opt) => {
+    const isSel = st.selected.has(opt.letter);
+    const optEl = el('button', { class:'option'+(isSel?' selected':''), onclick: () => {
+      if (st.phase !== 'answer') return;
+      if (st.selected.has(opt.letter)) st.selected.delete(opt.letter); else st.selected.add(opt.letter);
+      renderExamView();
+    }}, [
+      el('span', { class:'letter' }, [opt.letter]),
+      el('span', {}, [opt.text]),
+    ]);
+    optsWrap.appendChild(optEl);
+  });
+  card.appendChild(optsWrap);
+
+  if (st.phase === 'answer') {
+    card.appendChild(el('button', { class:'btn', style:'width:100%;justify-content:center', onclick: () => { st.phase='grade'; renderExamView(); } }, ['Valider ma réponse  ⏎']));
+    card.appendChild(el('p', { class:'small-muted', style:'margin-top:10px' }, ['Astuce : ', el('span',{class:'kbd'},['1-5']), ' ou ', el('span',{class:'kbd'},['A-E']), ' pour sélectionner, ', el('span',{class:'kbd'},['Entrée']), ' pour valider.']));
+  } else {
+    card.appendChild(el('p', { class:'small-muted', style:'margin-bottom:10px' }, ['Pas de correction officielle disponible hors-ligne : évaluez-vous honnêtement, comme avec des flashcards.']));
+    card.appendChild(el('div', { class:'grade-row' }, [
+      el('button', { class:'btn secondary', style:'background:var(--bad-bg);color:var(--bad)', onclick: () => gradeAndAdvance('wrong') }, ['✗ Je ne savais pas  (←)']),
+      el('button', { class:'btn secondary', style:'background:var(--good-bg);color:var(--good)', onclick: () => gradeAndAdvance('correct') }, ['✓ Je savais  (→ / Entrée)']),
+    ]));
+  }
+
+  root.appendChild(card);
+
+  root.appendChild(el('div', { class:'exam-footer' }, [
+    el('button', { class:'btn ghost', disabled: st.idx===0, onclick: () => { st.idx--; st.phase='answer'; st.selected=new Set(); renderExamView(); } }, ['← Précédente']),
+    el('button', { class:'btn ghost', onclick: () => skipQuestion() }, ['Passer cette question']),
+  ]));
+}
+
+function gradeAndAdvance(status){
+  const st = examState;
+  const qid = st.order[st.idx];
+  recordAnswer(qid, status);
+  st.results[qid] = status;
+  advance();
+}
+function skipQuestion(){
+  const st = examState;
+  const qid = st.order[st.idx];
+  st.results[qid] = st.results[qid] || 'skipped';
+  advance();
+}
+function advance(){
+  const st = examState;
+  st.selected = new Set();
+  st.phase = 'answer';
+  if (st.idx + 1 >= st.order.length) {
+    recordExamCompleted(st.exam.id);
+    go({ view:'exam-summary' });
+  } else {
+    st.idx++;
+    renderExamView();
+  }
+}
+
+function renderExamSummary(){
+  root.innerHTML = '';
+  const st = examState;
+  const vals = Object.values(st.results);
+  const correct = vals.filter(v=>v==='correct').length;
+  const wrong = vals.filter(v=>v==='wrong').length;
+  const skipped = vals.filter(v=>v==='skipped').length;
+  const graded = correct + wrong;
+  const acc = graded ? Math.round((correct/graded)*100) : null;
+  const seconds = Math.round((Date.now() - st.startedAt)/1000);
+  const mins = Math.floor(seconds/60), secs = seconds%60;
+
+  root.appendChild(el('div', { class:'card' }, [
+    el('h2', {}, ['Examen terminé']),
+    el('p', { class:'small-muted' }, [`${moduleById.get(st.moduleId).name} — ${st.exam.name} · ${mins}m${String(secs).padStart(2,'0')}s`]),
+    el('div', { class:'grid cols-3', style:'margin:18px 0' }, [
+      el('div', { class:'summary-stat' }, [el('div',{class:'num',style:'color:var(--good)'},[String(correct)]), el('div',{class:'lbl'},['Correctes'])]),
+      el('div', { class:'summary-stat' }, [el('div',{class:'num',style:'color:var(--bad)'},[String(wrong)]), el('div',{class:'lbl'},['À revoir'])]),
+      el('div', { class:'summary-stat' }, [el('div',{class:'num'},[acc==null?'—':acc+'%']), el('div',{class:'lbl'},['Score auto-évalué'])]),
+    ]),
+    el('div', { style:'display:flex;gap:10px;flex-wrap:wrap' }, [
+      wrong ? el('button', { class:'btn', onclick: () => reviewWrong() }, ['🔁 Revoir mes erreurs']) : null,
+      el('button', { class:'btn secondary', onclick: () => go({view:'module', moduleId:st.moduleId}) }, ['Retour au module']),
+      el('button', { class:'btn secondary', onclick: () => go({view:'dashboard'}) }, ['Tableau de bord']),
+    ]),
+  ]));
+}
+function reviewWrong(){
+  const st = examState;
+  const wrongIds = Object.entries(st.results).filter(([,v])=>v==='wrong').map(([k])=>k);
+  examState = { exam:st.exam, moduleId:st.moduleId, order:wrongIds, idx:0, selected:new Set(), phase:'answer', results:{}, startedAt:Date.now() };
+  go({ view:'exam' });
+}
+
+/* ============================== KEYBOARD ============================== */
+document.addEventListener('keydown', (ev) => {
+  if (route.view !== 'exam' || !examState) return;
+  const tag = (ev.target && ev.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  const st = examState;
+  const qid = st.order[st.idx];
+  const q = questionById.get(qid);
+  const letters = q.options.map(o=>o.letter);
+
+  if (st.phase === 'answer') {
+    const numMatch = ev.key.match(/^[1-5]$/);
+    const letterMatch = ev.key.match(/^[a-eA-E]$/);
+    let letter = null;
+    if (numMatch) letter = letters[parseInt(ev.key,10)-1];
+    else if (letterMatch) letter = ev.key.toUpperCase();
+    if (letter && letters.includes(letter)) {
+      if (st.selected.has(letter)) st.selected.delete(letter); else st.selected.add(letter);
+      renderExamView();
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === ' ') { st.phase='grade'; renderExamView(); ev.preventDefault(); return; }
+  } else if (st.phase === 'grade') {
+    if (ev.key === 'ArrowLeft') { gradeAndAdvance('wrong'); ev.preventDefault(); return; }
+    if (ev.key === 'ArrowRight' || ev.key === 'Enter') { gradeAndAdvance('correct'); ev.preventDefault(); return; }
+  }
+  if (ev.key === 'Escape') { go({ view:'module', moduleId: st.moduleId }); }
+});
+
+/* ============================== MAIN RENDER ============================== */
+function render(){
+  if (route.view === 'dashboard') renderDashboard();
+  else if (route.view === 'module') renderModuleView(route.moduleId);
+  else if (route.view === 'exam') renderExamView();
+  else if (route.view === 'exam-summary') renderExamSummary();
+}
+
+// Hook for the Android WebView wrapper's hardware/gesture back button: step
+// up one level in-app instead of immediately exiting. Returns true when a
+// step was taken, false when already at the dashboard (native should exit).
+window.__qbAndroidBack = function(){
+  if (route.view === 'exam' && examState) { go({ view:'module', moduleId: examState.moduleId }); return true; }
+  if (route.view !== 'dashboard') { go({ view:'dashboard' }); return true; }
+  return false;
+};
+
+render();
+})();
+</script>
+</body>
+</html>

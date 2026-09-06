@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flat (non-adaptive) launcher icon: works unmodified on every API level
+     this app supports (23+), so no legacy PNG densities are needed. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:pathData="M8,4 H40 A4,4 0 0 1 44,8 V40 A4,4 0 0 1 40,44 H8 A4,4 0 0 1 4,40 V8 A4,4 0 0 1 8,4 Z"
+        android:fillColor="#2F6FED" />
+    <path
+        android:pathData="M24,34 A10,10 0 1 0 24,14 A10,10 0 1 0 24,34 Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M19,24 L22.5,28 L30,19"
+        android:strokeColor="#2F6FED"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+</vector>

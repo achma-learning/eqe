@@ -1,113 +1,119 @@
 # eqe — AI Context File
-_Last synced: 2026-05-07 @ ef32a5f_
+_Last synced: 2026-09-06 @ 23f123d_
 
 ## 1. What This Is (Plain English)
-- **In one sentence:** two Tampermonkey userscripts for the medical-exam practice site `e-qe.online`. The big one (`+++ userscript.txt`) makes the site keyboard-driven (auto-advance timer, Pomodoro, quick-nav). The small one (`scrape-eqe.js`) walks every exam in a course and exports the questions as `.txt` / `.md`.
-- **Why it exists:** the site is a Next.js/React app you have to mouse through one slow click at a time. The main script makes it feel like Anki. The scraper exists because the author wanted offline / printable question banks per module without manually copy-pasting 700+ questions.
-- **Who uses it:** the author + anyone who installs the main script from Greasy Fork (script id `559366`). Tiny audience but public — bumping the main script's `@version` triggers their auto-update. The scraper is not (yet) on Greasy Fork; it's a personal/branch tool.
-- **Vibe:** polished personal toolset. Two single-file userscripts, no build, no deps. The main script is at v8.25 (~2.4k lines, real changelog). The scraper is at v0.5.0 (~1.3k lines, recent rapid-iteration history visible in `git log scrape-eqe.js`). Production-adjacent (people install it) but vibe-coded — see §6 before refactoring.
+- **In one sentence:** two Tampermonkey userscripts for the medical-exam practice site `e-qe.online` (the site itself, keyboard-driven; a scraper that exports its questions), plus a standalone, fully offline study app (`question-bank.html` + an Android APK wrapper) built from what the scraper collects.
+- **Why it exists:** the site is a Next.js/React app you have to mouse through one slow click at a time. The main userscript makes it feel like Anki while you're online. The scraper exists because the author wanted offline / printable question banks per module without manually copy-pasting thousands of questions. `question-bank.html` and the Android app exist so studying doesn't require the site, or even the internet, at all — open one file (or one app icon) and go.
+- **Who uses it:** the author + anyone who installs the main script from Greasy Fork (script id `559366`). Tiny audience but public — bumping the main script's `@version` triggers their auto-update. The scraper and the offline app are personal/branch tools, not (yet) distributed anywhere.
+- **Vibe:** polished personal toolset. The userscripts are single-file, no build, no deps. The offline app is the one part of the repo with an actual build step (a small Node script with zero npm dependencies) because it needs to bake ~3,300 scraped questions into one self-contained HTML file. Production-adjacent (people install the userscript) but vibe-coded — see §6 before refactoring.
 
 ## 2. How To Run It
-There's no dev server. The "build" is "save the file."
 
-### Main script (`+++ userscript.txt`)
+### Main userscript (`+++ userscript.txt`)
 - **Setup once:** install Tampermonkey (or Violentmonkey / Greasemonkey). Create a new script. Paste the contents of `+++ userscript.txt`. Save.
 - **Run dev:** open https://e-qe.online/ — the script auto-injects on `@match https://e-qe.online/*` and `https://www.e-qe.online/*`. Re-paste after edits, or use Tampermonkey's external-editor mode.
-- **Build / deploy:** no bundler. To ship: bump `@version` on `+++ userscript.txt:4`, push to `main`, then upload the file to the Greasy Fork listing at script id `559366`. Users auto-update via the `@updateURL` baked into the header.
+- **Build / deploy:** no bundler. To ship: bump `@version` on `+++ userscript.txt:4`, push to `main`, then upload the file to the Greasy Fork listing at script id `559366`.
 
 ### Scraper (`scrape-eqe.js`)
 - **Setup once:** create a *second* Tampermonkey script and paste `scrape-eqe.js`. Coexists with the main script — they share `GM_getValue('saved_courses', …)` so module names line up.
-- **Use it:** open any `https://www.e-qe.online/dashboard/course/<uuid>`. A green "📥 Scrape Course" button appears top-right with a "⚙️" gear next to it. Click the button → confirm → don't close the tab. The script walks every `/exam/*` link, captures Q text + A–E props + the topic tag + the correction-type badge, and downloads a `<module>.txt` (and optionally `.md`) at the end.
-- **Settings (gear icon):** scrape-speed preset (`fast` / `normal` / `safe` / `custom` ms inputs) and `.txt` / `.md` output toggles (`.txt` on by default, `.md` off). Persisted in GM storage.
-- **Required env vars:** none. All persistence is browser-side via `GM_getValue` / `GM_setValue` / `GM_deleteValue`.
+- **Use it:** open any `https://www.e-qe.online/dashboard/course/<uuid>`. A green "📥 Scrape Course" button appears top-right with a "⚙️" gear next to it. Click → confirm → don't close the tab. Walks every `/exam/*` link, captures Q text + A–E props + topic tag + correction badge, and downloads `<module>.txt` (and optionally `.md`) into `data/`.
+- **Known gap (see §6):** several already-scraped exams in `data/` only captured 1-2 questions each (an interrupted run), not the full ~50 — re-run the scraper against those exam URLs to fill them in. `question-bank.html`'s "Qualité des données" panel lists exactly which ones.
+
+### Offline study app (`question-bank.html`)
+- **Setup:** none. It's a single ~1.7 MB HTML file with all ~3,300 parsed questions embedded as JSON. Double-click it, or open it in any browser — no server, no internet, ever.
+- **Rebuild after scraping more data:** `node tools/build-question-bank.js`. Re-parses everything in `data/*.txt` and regenerates `question-bank.html`. Zero npm dependencies (uses only Node's `fs`/`path`).
+- **What it does:** dashboard with a daily study plan (one privileged module/day + a "finish ≥1 exam today" goal), an activity calendar heatmap, a module×week revision-intensity heatmap, per-module report + CSV export + print view, and a keyboard-driven practice flow (`1-5`/`A-E` select, `Enter` validate, `←/→` self-grade). All state lives in the browser's `localStorage` — nothing leaves the device.
+- **No answer keys exist in the scraped data** (see §6) — grading is self-reported (like flashcards), not auto-checked against a key.
+- **`data.html`**: a tiny standalone page of external resource links (currently the "S-ecn" collection on archive.org) that need real internet to use; linked from the app's footer ("Ressources externes").
+
+### Android app (`android/`)
+- **What it is:** a single-`WebView` wrapper around `question-bank.html` (see `android/README.md`). No native UI of its own, no network permission — the web app is bundled as an asset.
+- **Prebuilt APK:** `android/dist/banque-eqe-debug.apk` (debug-signed; sideload only, not Play-Store-ready).
+- **Rebuild:** `node tools/build-question-bank.js && cp question-bank.html data.html android/app/src/main/assets/ && cd android && ./gradlew assembleDebug`. Needs a JDK 17+ and the Android SDK (`platform-tools`, `platforms;android-34`, `build-tools;34.0.0`) referenced from `android/local.properties` (`sdk.dir=...`, not committed).
+- **Compatibility:** `minSdkVersion 23` (Android 6.0) → `targetSdkVersion 34`.
 
 ## 3. Tech Stack
-- **Language + runtime:** plain ES2020+ JavaScript, executed by Tampermonkey inside the page. `'use strict'` inside an IIFE in both scripts.
-- **Framework / key libraries:** none. Zero npm deps. Greasemonkey APIs only — `GM_getValue`, `GM_setValue`, plus `GM_deleteValue` in the scraper (`scrape-eqe.js:9-11`).
-- **What kind of project:** two single-file userscripts in one repo. Not a package, not a module tree. The main script is kept as `.txt` so editors don't try to lint it; Greasy Fork serves it as `.user.js`. The scraper is `.js` because it lives only in this repo.
+- **Userscripts:** plain ES2020+ JavaScript, executed by Tampermonkey inside the page. `'use strict'` inside an IIFE. Zero npm deps — only `GM_getValue`/`GM_setValue`/`GM_deleteValue`.
+- **Offline app build (`tools/`):** Node.js (`parse-data.js`, `build-question-bank.js`), zero npm dependencies (`fs`/`path` only). Output is plain HTML/CSS/vanilla JS — no framework, no bundler, no external requests of any kind (fonts, scripts, everything inline).
+- **Android app (`android/`):** standard Gradle/AGP project (`com.android.application` 8.5.2), one Java `Activity` (`MainActivity`), `androidx.appcompat` as the only dependency (needed for `AppCompatActivity` + the modern back-press API).
 - **External services:**
     - Target site: `e-qe.online` (Next.js/React app — selectors assume Tailwind class names like `aside.w-[280px].shrink-0.hidden.lg:flex` and `div.text-sm.font-black`).
-    - Distribution (main script only): Greasy Fork (`update.greasyfork.org/scripts/559366`).
-    - Background music asset: `Paniyolo - Coloring-LFpHsbRrK4M.mp3` ships in the repo root for the main script's `P`-toggleable music feature.
+    - Distribution (main userscript only): Greasy Fork (`update.greasyfork.org/scripts/559366`).
+    - Background music asset: `Paniyolo - Coloring-LFpHsbRrK4M.mp3` for the main script's `P`-toggleable music feature.
+    - The offline app and Android app make **no** external requests at runtime.
 
 ## 4. Code Map (The Important Files Only)
-- `+++ userscript.txt` — **the main product.** 2382 lines, v8.25. Section dividers (`// ==========`) split it into ~28 named blocks; the load-bearing ones:
-    - `CONFIGURATION, LOADOUTS & STATE` (line 23) — `PRESETS` array, `config` hydrated from `GM_getValue`, mutable `state`. Adding a setting = add a `GM_getValue` line here + a save call in `saveSettings()` (line 1806).
-    - `DOM SELECTORS` (line 117) — `getNextBtn`, `getCheckBtn`, `getCGroupBtn`, `getExplainBtn`, `getViewImageBtn`, `getAnswerButtons`, `getQuestionText`. **All site-specific.** When the e-qe.online DOM changes, this is what breaks.
-    - `CLEANUP & MEMORY MANAGEMENT` (line 188) — `cleanupRegistry` + `register*` wrappers. **Every `setTimeout`/`setInterval`/`MutationObserver`/event listener should be registered here** so `cleanup()` (line 200) tears them down on page unload.
-    - `COURSE SWITCHER` (line 366) — scans the dashboard for module cards, persists them to `GM_setValue('saved_courses', …)`, drives `1`–`9` quick-nav and the `M` overlay. **Read by the scraper too** for canonical module names.
-    - `COURSE PAGE: COMPACT VIEW & IMAGE TOGGLE` (line 511) — injected `<style>` block (`COURSE_STYLE_ID`) that restyles `/dashboard/course/*`.
-    - `SIDEBAR TOGGLE (updated for course page)` (line 1156) — has **two different mechanisms** (see §6).
-    - `POMOTROID SESSION TIMER` (line 1238) — survives page navigation by storing `pomoStartedAt` in `GM_setValue` and recomputing `remaining` on init.
-    - `DYNAMIC ISLAND TIMER DISPLAY` (line 1594) — floating top-of-page timer pill.
-    - `TIMER LOGIC (epoch-guarded)` (line 1886) — `state.timerEpoch` bumped on every navigation; stale `setTimeout` callbacks check the epoch before firing. Don't remove the epoch checks.
-    - `KEYBOARD HANDLER` (line 2125) — `handleKeydown`. Bails early if focus is in an `<input>`/`<textarea>`/`<select>` that isn't `eqe-*`-prefixed.
-    - `INITIALIZATION` (line 2263) — `init()` + the global `MutationObserver` that re-injects UI when Next.js re-renders.
-- `scrape-eqe.js` — **second product.** 1278 lines, v0.5.0. Section dividers same convention; the important ones:
-    - `CONSTANTS & STATE KEYS` (line 22) — speed presets, mutable `let` pause constants, `loadSettings()`/`saveSettings()`, placeholder regex set, GM storage keys.
-    - `SELECTORS` (line 108) — anchored to documented HTML templates: `h2.text-base.font-semibold` (question), `div.group.relative.w-full.overflow-hidden.rounded-2xl.border` + `span.flex-1` / `span.font-black` (answer button text + letter), `div.text-sm.font-black` (current Qn), `div.text-sm.font-bold.opacity-30` (total), `span.truncate.font-medium` (exam name), `a[data-slot="breadcrumb-link"][href*="/lesson/"]` (topic tag), `span.inline-flex.rounded-md` matching `^Correction` (correction badge). Each has a heuristic fallback.
-    - `JOB STATE` (line 278) — JSON-blobbed in `GM_getValue('scrape_job_v1', …)`; persists across SPA navigations so the walk survives URL changes.
-    - `QUESTION CAPTURE` (line 374) — `getCurrentQuestion`, `captureStableQuestion` (two-read stability check, kills the "Loading…" ghost — see §6), `getExamTitle`, `getCourseModuleName` (mirrors `scanAndSaveCourses` from the main script).
-    - `OUTPUT FORMATTING` (line 562) — `buildSummary` (lists missing Qns by name), `buildMarkdown`, `buildPlainText`, `sortByQn`, `exportFiles` (honors the `.txt` / `.md` settings).
-    - `COURSE PAGE: START BUTTON + EXAM DISCOVERY` (line 710) — the green button + the gear (settings) button.
-    - `SETTINGS PANEL` (line 784) — modal opened by the gear icon. Speed presets + output checkboxes.
-    - `EXAM PAGE: SCRAPING LOOP` (line 931) — pass 1 = linear text-change auto-advance (the v0.1.2 logic — DO NOT replace; see §6); pass 2 = surgical 3-round gap-fill via captured neighbors (`Q[n-1]` + Next, `Q[n+1]` + Prev, then direct sidebar click).
-    - `PROGRESS HUD` (line 1171), `ROUTING` (line 1234) — straightforward.
-- `scrape-eqe-debug.js` — diagnostic build of the scraper, 662 lines. Same shape as `scrape-eqe.js` v0.3.2 but with verbose `[eqe-scrape-debug]` console logging, separate JOB_KEY (`scrape_debug_job_v1`), distinct UI label (`🐞 Scrape Course (DEBUG)`), and a per-run log persisted in `GM_setValue('scrape_debug_log_v1')` and downloaded as `<module>.scrape-debug.log`. Use when the production scraper misbehaves.
-- `shortcuts.txt` — canonical list of every keybind & UI button for the main script. **Must stay in sync** with the in-script `showShortcutsHelp()` overlay (line 964).
-- `changelogs.md` — append-only release notes for the main script, format `## YYYY-MM-DD - Version X.Y`. Update on every `@version` bump of `+++ userscript.txt`. The scraper's history lives in `git log scrape-eqe.js`, not here.
-- `rules.txt` — Greasy Fork's hosting rules. Don't minify, don't obfuscate, don't load remote JS, stay under 2 MB.
+- `+++ userscript.txt` — the main userscript. See in-file section dividers (`// ==========`) for `CONFIGURATION`, `DOM SELECTORS`, `CLEANUP & MEMORY MANAGEMENT`, `COURSE SWITCHER`, `POMOTROID SESSION TIMER`, `TIMER LOGIC (epoch-guarded)`, `KEYBOARD HANDLER`, `INITIALIZATION`. Fragile bits in §6.
+- `scrape-eqe.js` — the scraper. `SELECTORS`, `JOB STATE`, `QUESTION CAPTURE`, `OUTPUT FORMATTING`, `EXAM PAGE: SCRAPING LOOP` are the load-bearing sections. Fragile bits in §6.
+- `scrape-eqe-debug.js` — diagnostic build of the scraper with verbose logging. Separate from production; don't merge.
+- `data/*.txt` / `data/*.md` — scraped question banks, one pair per module (7 modules, ~3,300 questions, 102 exam sessions). **Source of truth** for `question-bank.html` — never hand-edit the generated file, edit these (via re-scraping) instead.
+- `tools/parse-data.js` — parses `data/*.txt` into `{modules, issues}`. State machine over lines: exam headers (`Name : https://...`), question headers (`... Qn`), option lines (`A] ...`), with wrapped-line continuation handling. Also flags data problems: `broken-capture` (a question's stem is literally "Loading..." — a scraper timing bug, see §6), `thin-exam` (an exam parsed ≤2 questions — an interrupted scrape run), `count-mismatch` (parsed count disagrees with a declared-count preamble line when one exists).
+- `tools/build-question-bank.js` — runs the parser, embeds the result as JSON into `tools/question-bank.template.html`, writes `question-bank.html` to the repo root. Escapes `</script` inside embedded strings so a question containing that literal text can't break the page.
+- `tools/question-bank.template.html` — the actual app: all CSS + vanilla JS in one file, with `{{DATA_JSON}}`/`{{GENERATED_AT}}` placeholders. Edit **this** file, then re-run the build script — never hand-edit `question-bank.html` directly, it's generated and gets overwritten.
+  - Scheduler: smooth weighted round-robin (`buildRotation`) over modules weighted by remaining question count, spread across the days between "today" and the user's exam date — interleaves modules instead of running one for weeks straight. Falls back to `pickWeakestModule` (lowest self-graded accuracy) once the exam date has passed, for spaced review. Focus mode runs the same algorithm over just the user-picked modules on a fixed 30-day cycle.
+  - `window.__qbAndroidBack` — the hook the Android wrapper calls on the hardware/gesture back button (exam → module → dashboard, then let native handle it).
+- `question-bank.html` — **generated file**, ~1.7 MB, committed so the app works without a build step for anyone who clones the repo. Regenerate with `node tools/build-question-bank.js` after any `data/*.txt` or template change.
+- `data.html` — small static page of external resource links (needs real internet); linked from the app footer.
+- `android/` — Gradle project wrapping `question-bank.html` in a `WebView` for Android 6.0+. See `android/README.md`. `android/dist/banque-eqe-debug.apk` is the prebuilt, debug-signed artifact.
+- `shortcuts.txt` — canonical list of every keybind & UI button for the main userscript. **Must stay in sync** with the in-script `showShortcutsHelp()` overlay.
+- `changelogs.md` — append-only release notes for the main userscript, format `## YYYY-MM-DD - Version X.Y`. Update on every `@version` bump.
+- `rules.txt` — Greasy Fork's hosting rules for the userscript (don't minify, don't obfuscate, don't load remote JS, stay under 2 MB). Does not apply to the offline app or Android app.
 - `README.md` — short and partly stale (still mentions the v6.x SRS table). Treat as scratch notes.
-- `GEMINI.md` — partly stale (describes a Python LLM toolkit that doesn't exist in this repo). The userscript section + the "Maintenance Mandates" at the bottom are still accurate.
-- `senior-userscript-engineer.md` — system prompt for AI assistants editing the main script. Useful style guide.
+- `GEMINI.md` — partly stale (describes a Python LLM toolkit that doesn't exist here). The userscript section + "Maintenance Mandates" are still accurate.
+- `senior-userscript-engineer.md` — system prompt for AI assistants editing the main userscript.
 - `ver/` — frozen old versions of the main script (4.7 → 7.8). Reference only.
 - `analysis/` — older test versions (8.14 → 8.18) + post-mortems.
-- `++blueprint_testing/` — captured HTML snippets from `e-qe.online` used to design selectors. Useful when the site DOM changes.
-- `Paniyolo - Coloring-LFpHsbRrK4M.mp3` — background music for the main script's `P`-toggleable music feature.
+- `++blueprint_testing/` — captured HTML snippets from `e-qe.online` used to design selectors.
+- `Paniyolo - Coloring-LFpHsbRrK4M.mp3` — background music for the main script.
 - `LICENSE` — MIT, © 2026 achma-learning.
 
 ## 5. Rules For Editing This Code
-- **Single-file per script, no build.** Don't add `import`/`export`, don't introduce a bundler. Each script ships as one paste-able blob.
-- **Zero npm deps.** Use only browser APIs and Greasemonkey APIs (`GM_getValue`, `GM_setValue`, `GM_deleteValue`). New GM API → add it to the `@grant` list at the top.
-- **Keep it inside the IIFE.** Everything in `(() => { 'use strict'; ... })()`. No globals leaking onto `window` except the double-init guards (`window.__eqeLoaded`, `window.__eqeScraperLoaded`, `window.__eqeScraperDebugLoaded`).
-- **Bump `@version` on every shipped change.** Main script: also update `changelogs.md`. Scraper: commit message is the source of truth — bump the SemVer-ish version in `// @version` so reinstallers know.
-- **Main script extras:** keep `shortcuts.txt`, `changelogs.md`, and `showShortcutsHelp()` in sync when shortcuts change. Register every `setTimeout` / `setInterval` / `MutationObserver` / event listener via `register*` so `cleanup()` can tear them down on page unload (this rule does NOT apply to the scraper — it has a different lifecycle).
-- **No minification, no obfuscation, no remote `eval`.** Greasy Fork rejects them.
-- **Site-specific selectors live in the dedicated `SELECTORS` section** of each script. Don't sprinkle `document.querySelector('button.…')` throughout new code — add a `getXBtn()` helper.
-- **Prefer documented HTML templates over heuristics.** When the user shares a template (like the `data-slot="breadcrumb-link"` selector), anchor the primary selector to it and keep the heuristic scan as a backup.
-- **Don't trust `state` booleans over the live DOM** for sidebar/visibility toggles — derive intent from the DOM where possible. v8.23 fixed exactly this kind of desync.
+- **Userscripts stay single-file, no build.** Don't add `import`/`export`, don't introduce a bundler. Each ships as one paste-able blob, inside its own IIFE (`'use strict'`), no globals except the double-init guards (`window.__eqeLoaded`, `window.__eqeScraperLoaded`, `window.__eqeScraperDebugLoaded`).
+- **The offline app is the one place a build step is fine** — but keep it a single Node script with zero npm dependencies. Never add a framework or bundler to `tools/`.
+- **Never hand-edit `question-bank.html`.** Edit `tools/question-bank.template.html` and/or `tools/parse-data.js`, then run `node tools/build-question-bank.js`. Same for the Android app's bundled asset — always copy the freshly built file into `android/app/src/main/assets/` before `./gradlew assembleDebug`.
+- **Zero npm deps, zero external requests at runtime** for the offline app and Android app — no CDN scripts, no fonts, no analytics. That's the entire point ("least resistance to learn" without fighting the internet).
+- **No fabricated answer keys.** The scraped data has no correct-answer information. Don't invent one — the practice flow is honestly self-graded, like flashcards.
+- **Keep it inside the IIFE** (userscripts) / inside the app's single `<script>` (offline app). No globals leaking onto `window` beyond the documented guards/hooks.
+- **Bump `@version` on every shipped userscript change**, update `changelogs.md` too for the main script. The scraper's version lives in `// @version`; its history is `git log scrape-eqe.js`.
+- **Site-specific selectors live in the dedicated `SELECTORS` section** of each userscript. Add a `getXBtn()` helper rather than sprinkling `document.querySelector(...)`.
+- **Don't trust `state` booleans over the live DOM** for sidebar/visibility toggles in the main userscript — derive intent from the DOM where possible.
 
 ## 6. Fragile Bits & Landmines
-### Main script
-- **Sidebar visibility uses two different mechanisms** (`+++ userscript.txt:1156`):
-    - On `/dashboard/course/*`: an injected `<style>` rule (`applyCourseSidebarHide`). Inline `style.display='none'` does **not** work here because Next.js remounts the `aside` and wipes inline styles — this was the v8.25 fix.
-    - Everywhere else: inline `style.display = 'none'` plus a `MutationObserver` that waits for late hydration (capped at 10s, `+++ userscript.txt:2295-2302`).
-- **`state.timerEpoch`** (`+++ userscript.txt:73`, checked at `1886+`): stale `setTimeout` callbacks compare against the epoch they captured and bail if it changed. **Removing these checks causes ghost auto-advances.**
-- **Course page sidebar selector escaping** (`+++ userscript.txt:1168`): Tailwind bracket classes (`w-[280px]`) need CSS-escaped brackets (`w-\\[280px\\]`). Two different escapings, one for `querySelector` (JS) and one for the injected `<style>` (CSS). Don't "simplify" them.
-- **`scanAndSaveCourses` mutates `saved_courses` in place** (`+++ userscript.txt:396`) — added in v8.24 so older saves don't lose icons. Don't rewrite as a clean replace; the scraper relies on this being a stable cache too.
-- **`R` reset on the course page requires two presses within 3s** (v8.22). The second-press requirement *is* the confirmation.
-- **Shortcuts handler bails when focus is in `INPUT`/`TEXTAREA`/`SELECT`** unless the element id starts with `eqe-`. New form inputs in the script's UI **must** use the `eqe-` id prefix.
+### Main userscript
+- **Sidebar visibility uses two different mechanisms** (`+++ userscript.txt:1156`): an injected `<style>` rule on `/dashboard/course/*` (inline styles get wiped by Next.js remounts there), inline `style.display='none'` everywhere else.
+- **`state.timerEpoch`**: stale `setTimeout` callbacks compare against the epoch they captured and bail if it changed. Removing these checks causes ghost auto-advances.
+- **Course page sidebar selector escaping**: Tailwind bracket classes (`w-[280px]`) need CSS-escaped brackets, with two different escapings (JS `querySelector` vs. injected `<style>`). Don't "simplify" them.
+- **`scanAndSaveCourses` mutates `saved_courses` in place** — the scraper and offline-app tooling don't depend on this cache, but the userscript's own quick-nav does.
+- **Shortcuts handler bails when focus is in `INPUT`/`TEXTAREA`/`SELECT`** unless the element id starts with `eqe-`.
 
 ### Scraper
-- **Pass 1 must stay text-change-based** (`scrape-eqe.js:1019` area). v0.2.0 tried to switch to Q-number-based advancement and broke auto-advance because `getCurrentQuestionNumber()` matched bare "Q1" sidebar labels (regex `/Q\s*(\d+)$/`) and pinned the page-state detector to 1. The correct shape (current code): keep the v0.1.2 text-change loop as the auto-advance mechanism and use Qn purely as metadata + driver for the gap-fill pass. **Do not replace pass 1.**
-- **Placeholder filter is load-bearing** (`scrape-eqe.js:51` `PLACEHOLDER_RES`). Without it, "Loading…" gets captured as Q1 and then the real text triggers a ghost re-capture as Q2 (the "51/50" symptom). Adding new placeholders is fine; removing entries will resurrect the bug.
-- **Two-read stability check** (`captureStableQuestion`, `scrape-eqe.js:411`): the page renders answer buttons before the `h2` settles. Without two reads `STABILITY_DELAY_MS` apart, you'll capture a transient state. Don't remove this for "speed".
-- **`getCurrentQuestionNumber()` must skip `aside`/`nav` descendants** (`scrape-eqe.js:155`). The sidebar shows "Q1, Q2, Q3, …" — without the `:not(aside)` filter, document-order makes "Q1" win every time.
-- **Selector fallbacks are kept on purpose.** Per the user's standing instruction: when a primary selector is anchored to a documented template, the heuristic scan stays as the fallback. Don't garbage-collect the fallbacks even if they look redundant.
-- **Different correction badges have different background colours** ("Correction officielle" = emerald, "Correction collective" = amber). Don't hardcode `bg-emerald-50` into the selector — match by the structural classes + `^Correction` text only.
-- **Files that look removable but aren't:**
-    - `Paniyolo - Coloring-LFpHsbRrK4M.mp3` — main script's music feature.
-    - `ver/`, `analysis/`, `++blueprint_testing/` — reference material.
-    - `senior-userscript-engineer.md`, `rules.txt` — system prompt + Greasy Fork rules used by AI assistants editing the main script.
-    - `scrape-eqe-debug.js` — diagnostic build, separate from the production scraper. Don't merge them.
-- **`README.md` and `GEMINI.md` are partly stale.** Trust `+++ userscript.txt`, `scrape-eqe.js`, `shortcuts.txt`, `changelogs.md`, and this file.
+- **Pass 1 must stay text-change-based** — v0.2.0 tried Q-number-based advancement and broke because sidebar labels ("Q1") confused the detector. Keep the text-change loop as the auto-advance mechanism; use Qn only as metadata.
+- **Placeholder filter is load-bearing** (`PLACEHOLDER_RES`) — without it "Loading…" gets captured as real question text. It still isn't airtight: see the next point.
+- **Confirmed, live bug: every exam's Q1 sometimes captures "Loading..." as the stem** (options are fine) — 41 questions across the current `data/*.txt` files have this, always at Q1 of an exam, never elsewhere. Root cause: pass 1's two-read stability check has no prior text to diff against for the very first question of a run, so it can capture before the real text settles. `tools/parse-data.js` detects and flags these (`broken-capture`); the offline app excludes them from practice automatically. Fixing it at the source means giving Q1 a warm-up read (e.g. reusing the stability check with an extra initial poll) before accepting its text — not yet done.
+- **Confirmed, real data-completeness gap:** several already-scraped exams only got 1-2 questions captured before the run was interrupted (not a parsing bug — the `.md` exports for the same exams are equally thin). Notably `Anapath 2` (10/14 exams thin) and `Immuno - Génétique - Med Interne` (14/16 exams thin); `Appareil Locomoteur` and `Glandes Endocrines Et Revêtement Cutanée` are fully scraped. `tools/parse-data.js` flags these as `thin-exam`; the offline app's module view shows an "incomplet" pill and the dashboard's "Qualité des données" card lists them with a direct link back to the exam on `e-qe.online` to re-scrape.
+- **Two-read stability check** (`captureStableQuestion`): the page renders answer buttons before the `h2` settles. Don't remove this for "speed".
+- **`getCurrentQuestionNumber()` must skip `aside`/`nav` descendants** — otherwise the sidebar's "Q1" wins over the real one.
+- **Selector fallbacks are kept on purpose** even when they look redundant.
+- **Different correction badges have different colours** — match by structure + `^Correction` text, never by hardcoded background color class.
+
+### Offline app / parser (`tools/`, `question-bank.html`)
+- **`checkIntegrity()`'s `count-mismatch` check only fires when a module file has a declared-count preamble** (`Normal 2025 = 32 Questions`-style lines). Several module files (e.g. `Anapath 2.txt`, `Immuno...txt`) don't have one, which is exactly why the `thin-exam` check exists as a second, preamble-independent signal — don't remove `thin-exam` thinking `count-mismatch` already covers it.
+- **Question/exam ids are derived from slugified names** (`module.id--exam-slug-qN`). If two exams in the same module ever slugify to the same string, their ids would collide — hasn't happened in the current data (checked at build time produces no duplicates) but a rename in newly scraped data could theoretically cause it.
+- **`</script` inside embedded JSON is escaped at build time** (`escapeForScriptTag` in `build-question-bank.js`). Don't remove this — a question or option containing that literal substring would otherwise truncate the page.
+- **All state is `localStorage`, scoped per browser/profile (or per Android app install).** There is no sync between devices and no server — by design.
+
+### Android app
+- **`androidx.appcompat` pulls in a duplicate-class conflict** between `kotlin-stdlib` and the older `kotlin-stdlib-jdk7`/`jdk8` artifacts. Fixed via `configurations.all { exclude ... }` in `android/app/build.gradle` — don't remove that block or `assembleDebug` fails with `checkDebugDuplicateClasses`.
+- **Back button priority matters**: `MainActivity` checks `webView.canGoBack()` (real page nav, e.g. to `data.html`) before falling back to the `window.__qbAndroidBack` JS hook (in-app view stack), before finally backing out of the app. Reordering this breaks back-navigation from `data.html`.
+- **`local.properties` is gitignored** (machine-specific `sdk.dir`) — set it locally before building, per `android/README.md`.
 
 ## 7. Current State
 - **Last shipped:**
-    - Main script: **v8.25** (2026-04-25) — course-page sidebar hide via injected CSS rule.
-    - Scraper: **v0.5.0** (2026-05-07) — settings panel (gear icon) with scrape-speed presets and `.txt` / `.md` output toggles, plus correction-type badge captured next to the exam URL (`## Ratt 2024 (Correction officielle) : <url>`).
-- **Working on now:** scraper iteration on branch `claude/scrape-eqe-prepositions-eN7Rc` (PR #34). v0.5.0 is the latest commit; recent passes added per-question topic tags from the breadcrumb (v0.4.4), specific-Qn missing list in the summary (v0.4.2), surgical 3-round gap-fill via captured neighbors (v0.4.1), and Qn-tagged capture with the documented HTML-template anchors (v0.4.0/v0.4.3).
-- **Next up:** _Not yet figured out._ No open issues or `TODO:` markers. The scraper is feature-complete for the user's current ask; main script has no in-flight changes.
+    - Main userscript: **v8.33** (2026-05-13) — module name resolution fix on exam pages.
+    - Scraper: **v0.7.4** (see `git log scrape-eqe.js`) — manual "📄 Copy Question" button, PASS 3 reload-based recovery for stubborn gaps.
+    - Offline app / Android app: new in this pass — `question-bank.html`, `tools/`, `android/`, `data.html`.
+- **Working on now:** nothing in flight; the offline app + Android wrapper are feature-complete for the current ask (heatmaps, daily module/exam scheduling, semester vs. focus mode, CSV/print report).
+- **Next up:** re-scrape the `thin-exam`-flagged exams (see §6) to fill in the ~24 largely-empty exams; consider fixing the scraper's Q1 "Loading..." race at the source instead of only flagging it downstream.
 
 ## 8. Update Protocol (Verbatim)
 > **For the AI Assistant:** When asked to "Update CONTEXT.md":
